@@ -190,4 +190,72 @@ window.addEventListener('resize', () => {
 });
 
 // Chạy Game
-animate();
+animate();// ===================================================
+// 1. KẾT NỐI SERVER SOCKET.IO ONLINE
+// ===================================================
+const socket = io('https://space-shooter-server-z9th.onrender.com');
+
+let currentRoomCode = null;
+let myPlayerNumber = 1;
+
+// Lấy các phần tử Giao diện từ index.html
+const lobbyMenu = document.getElementById('lobby-menu');
+const btnCreateRoom = document.getElementById('btnCreateRoom');
+const btnJoinRoom = document.getElementById('btnJoinRoom');
+const roomCodeInput = document.getElementById('roomCodeInput');
+const statusText = document.getElementById('statusText');
+
+// Xử lý khi nhấn nút "Tạo phòng" (建立房間)
+btnCreateRoom.addEventListener('click', () => {
+    const userData = {
+        name: document.getElementById('playerName').value,
+        ship: document.getElementById('shipSelect').value,
+        map: document.getElementById('mapSelect').value
+    };
+    socket.emit('createRoom', userData);
+    statusText.innerText = "正在建立房間... (Đang tạo phòng...)";
+});
+
+// Nhận phản hồi Tạo phòng thành công
+socket.on('roomCreated', (data) => {
+    currentRoomCode = data.roomCode;
+    myPlayerNumber = data.playerNumber;
+    statusText.innerText = `房間已建立！房號: ${currentRoomCode} (Mã phòng: ${currentRoomCode} - Đang chờ P2...)`;
+});
+
+// Xử lý khi nhấn nút "Vào phòng" (加入房間)
+btnJoinRoom.addEventListener('click', () => {
+    const code = roomCodeInput.value.trim();
+    if (code.length !== 4) {
+        alert("請輸入4位數房號！ (Vui lòng nhập đủ 4 số!)");
+        return;
+    }
+    const userData = {
+        name: document.getElementById('playerName').value,
+        ship: document.getElementById('shipSelect').value
+    };
+    socket.emit('joinRoom', { roomCode: code, userData: userData });
+    statusText.innerText = "正在加入房間... (Đang vào phòng...)";
+});
+
+// Nhận phản hồi Vào phòng thành công
+socket.on('roomJoined', (data) => {
+    currentRoomCode = data.roomCode;
+    myPlayerNumber = data.playerNumber;
+    statusText.innerText = `成功加入房間 ${currentRoomCode}！ (Đã vào phòng, đang vào game...)`;
+});
+
+// Đủ 2 người chơi -> Ẩn Menu & Bắt đầu Game 3D
+socket.on('playerJoined', (data) => {
+    statusText.innerText = "玩家已齊聚！遊戲開始！ (Đã đủ 2 người! Game bắt đầu!)";
+    setTimeout(() => {
+        if (lobbyMenu) lobbyMenu.style.display = 'none';
+        // Gọi hàm bắt đầu Game 3D của bạn ở đây (nếu có)
+    }, 1200);
+});
+
+// Báo lỗi nếu sai mã phòng / phòng đầy
+socket.on('errorMsg', (msg) => {
+    alert(msg);
+    statusText.innerText = "";
+});

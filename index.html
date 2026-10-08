@@ -1,24 +1,55 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Space Shooter - Báo Cáo Đồ Án</title>
+    <title>3D Space Shooter</title>
     <link rel="stylesheet" href="styles.css">
-    <!-- Nhúng thư viện Three.js từ CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <!-- Thư viện Socket.io Client -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 </head>
 <body>
-    <!-- Giao diện HUD (Điểm số & Màn hình Game Over) -->
-    <div id="ui-container">
-        <div id="score-board">SCORE: <span id="score">0</span></div>
-        <div id="game-over" class="hidden">
-            <h1>GAME OVER</h1>
-            <p>Nhấn <b>R</b> để chơi lại</p>
+
+    <!-- Giao diện Trang chủ Chờ (Lobby Menu) -->
+    <div id="lobby-menu" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10, 10, 25, 0.9); color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; font-family: Arial, sans-serif;">
+        <h1 style="font-size: 42px; text-shadow: 0 0 10px #00d2ff; color: #00d2ff; margin-bottom: 20px;">3D 太空射擊：雙人對戰</h1>
+        
+        <div style="margin-bottom: 15px;">
+            <label>玩家名稱 (Tên): </label>
+            <input type="text" id="playerName" value="飛船大師" style="padding: 8px; font-size: 16px; border-radius: 5px; border: none;">
         </div>
+
+        <div style="margin-bottom: 15px;">
+            <label>選擇戰艦 (Tàu chiến): </label>
+            <select id="shipSelect" style="padding: 8px; font-size: 16px; border-radius: 5px;">
+                <option value="1">🚀 幻影號 (Phantom)</option>
+                <option value="2">⚡ 閃電號 (Lightning)</option>
+                <option value="3">🛡️ 泰坦號 (Titan)</option>
+            </select>
+        </div>
+
+        <div style="margin-bottom: 25px;">
+            <label>選擇地圖 (Map): </label>
+            <select id="mapSelect" style="padding: 8px; font-size: 16px; border-radius: 5px;">
+                <option value="1">🌌 銀河深處 (Deep Space)</option>
+                <option value="2">☄️ 小行星帶 (Asteroid Belt)</option>
+            </select>
+        </div>
+
+        <div style="display: flex; gap: 15px; margin-bottom: 20px;">
+            <button id="btnCreateRoom" style="padding: 12px 24px; font-size: 18px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer;">建立房間 (Tạo phòng)</button>
+        </div>
+
+        <div style="display: flex; gap: 10px; align-items: center;">
+            <input type="text" id="roomCodeInput" placeholder="輸入4位房號" maxlength="4" style="padding: 10px; font-size: 18px; width: 180px; text-align: center; border-radius: 5px; border: none;">
+            <button id="btnJoinRoom" style="padding: 10px 20px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">加入房間 (Vào phòng)</button>
+        </div>
+
+        <div id="statusText" style="margin-top: 25px; font-size: 20px; color: #ffca28; font-weight: bold;"></div>
     </div>
 
-    <!-- Khởi chạy Script Game 3D -->
-    <script src="src/main.js"></script>
+    <!-- Script Game chính -->
+    <script type="module" src="/src/main.js"></script>
 </body>
 </html>
