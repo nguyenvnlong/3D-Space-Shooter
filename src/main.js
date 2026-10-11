@@ -1,3 +1,73 @@
+// Kết nối tới Server Socket.io Online
+const socket = io('https://space-shooter-server-z9th.onrender.com');
+
+let currentRoomCode = null;
+let myPlayerNumber = 1;
+
+// Lấy phần tử giao diện
+const lobbyMenu = document.getElementById('lobby-menu');
+const btnCreateRoom = document.getElementById('btnCreateRoom');
+const btnJoinRoom = document.getElementById('btnJoinRoom');
+const roomCodeInput = document.getElementById('roomCodeInput');
+const statusText = document.getElementById('statusText');
+
+// Lắng nghe sự kiện Tạo Phòng
+if (btnCreateRoom) {
+    btnCreateRoom.addEventListener('click', () => {
+        const userData = {
+            name: document.getElementById('playerName').value,
+            ship: document.getElementById('shipSelect').value,
+            map: document.getElementById('mapSelect').value
+        };
+        socket.emit('createRoom', userData);
+        statusText.innerText = "正在建立房間... (Đang tạo phòng...)";
+    });
+}
+
+// Nhận mã phòng từ Server
+socket.on('roomCreated', (data) => {
+    currentRoomCode = data.roomCode;
+    myPlayerNumber = data.playerNumber;
+    statusText.innerText = `房間已建立！房號: ${currentRoomCode} (Mã phòng: ${currentRoomCode})`;
+});
+
+// Lắng nghe sự kiện Vào Phòng
+if (btnJoinRoom) {
+    btnJoinRoom.addEventListener('click', () => {
+        const code = roomCodeInput.value.trim();
+        if (code.length !== 4) {
+            alert("請輸入4位數房號！ (Vui lòng nhập đủ 4 số!)");
+            return;
+        }
+        const userData = {
+            name: document.getElementById('playerName').value,
+            ship: document.getElementById('shipSelect').value
+        };
+        socket.emit('joinRoom', { roomCode: code, userData: userData });
+        statusText.innerText = "正在加入房間... (Đang vào phòng...)";
+    });
+}
+
+// Nhận phản hồi vào phòng
+socket.on('roomJoined', (data) => {
+    currentRoomCode = data.roomCode;
+    myPlayerNumber = data.playerNumber;
+    statusText.innerText = `成功加入房間 ${currentRoomCode}！`;
+});
+
+// Khi đủ 2 người chơi -> Ẩn Menu
+socket.on('playerJoined', (data) => {
+    statusText.innerText = "玩家已齊聚！遊戲開始！";
+    setTimeout(() => {
+        if (lobbyMenu) lobbyMenu.style.display = 'none';
+    }, 1200);
+});
+
+// Báo lỗi
+socket.on('errorMsg', (msg) => {
+    alert(msg);
+    statusText.innerText = "";
+});
 // ==========================================
 // 1. KHỞI TẠO SCENE, CAMERA & RENDERER (THREE.JS)
 // ==========================================
