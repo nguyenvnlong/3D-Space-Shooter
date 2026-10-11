@@ -1,5 +1,5 @@
  // Kết nối tới Server Socket.io Render chính xác của bạn
-const socket = io('https://space-shooter-server-z9th.onrender.com');
+ const socket = io('https://space-shooter-server-z9th.onrender.com');
 
 let currentRoomCode = null;
 let myPlayerNumber = 1;
