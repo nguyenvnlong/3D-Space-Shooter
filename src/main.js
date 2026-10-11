@@ -1,5 +1,6 @@
 // Kết nối tới Server Socket.io Render
-const socket = io('https://space-shooter-server-z9th.onrender.com');
+// Thay URL bên trong ngoặc thành URL mới bạn vừa copy trên Render
+const socket = io('https://LINK-SERVER-MOI-CUAN-BAN.onrender.com');
 
 let currentRoomCode = null;
 let myPlayerNumber = 1;
