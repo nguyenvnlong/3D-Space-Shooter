@@ -1,0 +1,18 @@
+{
+  "name": "3d-space-shooter-main",
+  "version": "1.0.0",
+  "description": "3D Space Shooter - đấu 2 người bằng mã phòng",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.3.0",
+    "socket.io": "^4.8.4"
+  }
+}

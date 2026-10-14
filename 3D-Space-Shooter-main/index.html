@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Space Shooter</title>
+
+    <!-- Socket.io client -->
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+    <!-- Import Map cho Three.js -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #050515; font-family: Arial, sans-serif; color: #fff; }
+        .hidden { display: none !important; }
+
+        #lobby-menu {
+            position: fixed; inset: 0; z-index: 100; overflow-y: auto;
+            background: radial-gradient(ellipse at top, #12124a 0%, #050515 70%);
+            display: flex; align-items: center; justify-content: center; padding: 20px;
+        }
+        .panel { width: 100%; max-width: 560px; text-align: center; }
+        h1 { font-size: 40px; color: #00d2ff; text-shadow: 0 0 14px #00d2ff; margin: 0 0 6px; }
+        .tag { color: #9fb4ff; margin: 0 0 22px; }
+
+        .modes { display: flex; gap: 12px; margin-bottom: 20px; }
+        .mode {
+            flex: 1; padding: 14px 10px; font-size: 18px; color: #fff; cursor: pointer;
+            background: #11113a; border: 2px solid #2a2a6a; border-radius: 10px;
+        }
+        .mode small { display: block; margin-top: 6px; font-size: 13px; color: #9fb4ff; }
+        .mode.active { border-color: #00d2ff; background: #0b2a4a; box-shadow: 0 0 14px rgba(0, 210, 255, .5); }
+
+        .field { margin-bottom: 12px; }
+        .field label { display: inline-block; min-width: 130px; text-align: right; margin-right: 8px; }
+        input, select { padding: 8px; font-size: 16px; border-radius: 5px; border: none; }
+        button.act { padding: 12px 26px; font-size: 18px; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+        #btnCreateRoom { background: #28a745; margin: 8px 0 14px; }
+        #btnJoinRoom { background: #007bff; padding: 10px 18px; }
+        #btnStart { background: #ff9800; margin-top: 14px; }
+        .joinrow { display: flex; gap: 10px; justify-content: center; align-items: center; }
+        #roomCodeInput { width: 170px; padding: 10px; font-size: 20px; text-align: center; }
+
+        #statusText { margin-top: 18px; font-size: 18px; color: #ffca28; font-weight: bold; min-height: 24px; }
+
+        .help { margin-top: 22px; padding: 12px 16px; background: rgba(255,255,255,.06); border-radius: 8px;
+                font-size: 14px; line-height: 1.7; color: #cfd8ff; text-align: left; }
+
+        #roomCodeBig { font-size: 64px; letter-spacing: 10px; color: #ffd84a; margin: 6px 0 10px; }
+        #playerList { list-style: none; padding: 0; margin: 14px 0; }
+        #playerList li { background: #1a1a4a; margin: 6px 0; padding: 10px; border-radius: 6px; font-size: 18px; }
+    </style>
+</head>
+<body>
+
+    <div id="lobby-menu">
+
+        <!-- ===== TRANG CHỦ ===== -->
+        <div id="homePanel" class="panel">
+            <h1>🚀 3D SPACE SHOOTER</h1>
+            <p class="tag">太空射擊 · 和朋友一起守護銀河！(Cùng bạn bè bảo vệ thiên hà!)</p>
+
+            <div class="modes">
+                <button id="modeCoop" class="mode active">🤝 合作模式 Co-op
+                    <small>1-4 người cùng bắn thiên thạch, càng lâu càng nhanh</small></button>
+                <button id="modePvp" class="mode">⚔️ 對戰模式 PvP
+                    <small>Đấu tay đôi 1 vs 1</small></button>
+            </div>
+
+            <div class="field">
+                <label>玩家名稱 (Tên):</label>
+                <input type="text" id="playerName" value="飛船大師" maxlength="12">
+            </div>
+            <div class="field">
+                <label>選擇戰艦 (Tàu):</label>
+                <select id="shipSelect">
+                    <option value="1">🚀 幻影號 (Phantom) - cân bằng</option>
+                    <option value="2">⚡ 閃電號 (Lightning) - nhanh, máu ít</option>
+                    <option value="3">🛡️ 泰坦號 (Titan) - chậm, máu trâu</option>
+                </select>
+            </div>
+            <div class="field">
+                <label>選擇地圖 (Map):</label>
+                <select id="mapSelect">
+                    <option value="1">🌌 銀河深處 (Deep Space)</option>
+                    <option value="2">☄️ 小行星帶 (Asteroid Belt) - khó hơn</option>
+                </select>
+            </div>
+
+            <button id="btnCreateRoom" class="act">建立房間 (Tạo phòng)</button>
+            <button id="btnSolo" class="act" style="background:#9c27b0;margin-left:8px;">單人遊戲 (Chơi một mình)</button>
+
+            <div class="joinrow">
+                <input type="text" id="roomCodeInput" placeholder="輸入4位房號" maxlength="4" inputmode="numeric">
+                <button id="btnJoinRoom" class="act">加入房間 (Vào phòng)</button>
+            </div>
+
+            <div class="help">
+                🎮 <b>Điều khiển:</b> WASD hoặc phím mũi tên để bay, <b>Space</b> để bắn.<br>
+                🤝 <b>Co-op:</b> bắn vỡ thiên thạch để ghi điểm. Thiên thạch lọt qua sẽ trừ 🛡️ lá chắn chung, đâm trúng tàu sẽ mất máu. Hết lá chắn hoặc cả đội chết là thua.<br>
+                ⚔️ <b>PvP:</b> bắn hạ tàu đối thủ trước.
+            </div>
+        </div>
+
+        <!-- ===== PHÒNG CHỜ ===== -->
+        <div id="waitPanel" class="panel hidden">
+            <h2>房號 (Mã phòng)</h2>
+            <div id="roomCodeBig">----</div>
+            <p id="waitInfo" style="color:#9fb4ff"></p>
+            <ul id="playerList"></ul>
+            <button id="btnStart" class="act hidden">開始遊戲 (Bắt đầu)</button>
+        </div>
+
+        <div id="statusText" style="position:absolute;bottom:14px;left:0;right:0;text-align:center;"></div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+</body>
+</html>
