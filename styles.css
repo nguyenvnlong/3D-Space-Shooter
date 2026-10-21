@@ -49,3 +49,158 @@ canvas {
 .hidden {
     display: none;
 }
+
+#lobby-menu {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow-y: auto;
+    padding: 24px;
+    color: #fff;
+    background: radial-gradient(ellipse at top, #12124a 0%, #050515 70%);
+}
+
+.panel {
+    width: min(100%, 560px);
+    padding: 20px 0 44px;
+    text-align: center;
+}
+
+.panel h1 {
+    margin-bottom: 8px;
+    color: #00d2ff;
+    font-size: 36px;
+    text-shadow: 0 0 14px #00d2ff;
+}
+
+.tag {
+    margin-bottom: 20px;
+    color: #9fb4ff;
+}
+
+.modes,
+.actions,
+.joinrow {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+}
+
+.modes {
+    margin-bottom: 18px;
+}
+
+.mode {
+    flex: 1;
+    min-height: 58px;
+    padding: 10px;
+    color: #fff;
+    cursor: pointer;
+    background: #11113a;
+    border: 2px solid #2a2a6a;
+    border-radius: 6px;
+}
+
+.mode small {
+    display: block;
+    margin-top: 5px;
+    color: #b9c6ef;
+}
+
+.mode.active {
+    border-color: #00d2ff;
+    background: #0b2a4a;
+}
+
+.field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 12px 0;
+    text-align: left;
+}
+
+.field input,
+.field select,
+#roomCodeInput {
+    min-width: 0;
+    padding: 9px;
+    font-size: 16px;
+    border: 0;
+    border-radius: 4px;
+}
+
+.field input,
+.field select {
+    width: 62%;
+}
+
+.actions {
+    margin: 20px 0 14px;
+}
+
+.act {
+    min-height: 42px;
+    padding: 9px 16px;
+    color: #fff;
+    font-size: 16px;
+    cursor: pointer;
+    border: 0;
+    border-radius: 4px;
+}
+
+.create { background: #218838; }
+.solo { background: #59636e; }
+.join { background: #0876c9; }
+.start { margin-top: 12px; background: #d17800; }
+
+#roomCodeInput {
+    width: 170px;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+#statusText {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    left: 12px;
+    min-height: 24px;
+    color: #ffca28;
+    font-size: 16px;
+    font-weight: bold;
+    text-align: center;
+}
+
+#roomCodeBig {
+    margin: 8px 0;
+    color: #ffd84a;
+    font-size: 56px;
+    letter-spacing: 8px;
+}
+
+#waitInfo { color: #b9c6ef; }
+
+#playerList {
+    padding: 0;
+    list-style: none;
+}
+
+#playerList li {
+    margin: 6px 0;
+    padding: 10px;
+    background: #1a1a4a;
+    border-radius: 4px;
+}
+
+@media (max-width: 520px) {
+    #lobby-menu { padding: 14px; }
+    .panel h1 { font-size: 28px; }
+    .actions, .joinrow { flex-wrap: wrap; }
+    .act { flex: 1 1 auto; }
+}

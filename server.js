@@ -2,11 +2,13 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const cors = require('cors');
 const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
+app.use(cors());
 
 // Tự tìm thư mục chứa index.html (dù nằm cùng cấp hay trong thư mục con)
 const GAME_DIR = fs.existsSync(path.join(__dirname, 'index.html'))
@@ -14,8 +16,9 @@ const GAME_DIR = fs.existsSync(path.join(__dirname, 'index.html'))
   : path.join(__dirname, '3D-Space-Shooter-main');
 console.log('Thư mục game:', GAME_DIR);
 
-app.use('/src', express.static(path.join(GAME_DIR, 'src')));
+app.use('/3D-Space-Shooter-main', express.static(path.join(__dirname, '3D-Space-Shooter-main')));
 app.get('/', (req, res) => res.sendFile(path.join(GAME_DIR, 'index.html')));
+app.use(express.static(GAME_DIR));
 app.get('/health', (req, res) => res.send('ok'));
 
 // ==========================================
@@ -200,7 +203,7 @@ function tickCoop(code) {
   const f = (n) => Math.round(n * 100) / 100;
   io.to(code).emit('snapshot', {
     t: Math.floor(sim.time), sc: sim.score, lv: level, sh: Math.max(0, sim.shield), m: f(mul),
-    a: sim.asteroids.map((a) => [a.id, f(a.x), f(a.z), f(a.r)]),
+    a: sim.asteroids.map((a) => [a.id, f(a.x), f(a.z), f(a.vx), f(a.vz), f(a.r)]),
     b: sim.bullets.map((b) => [b.id, f(b.x), f(b.z)]),
     p: room.players.map((p) => [p.number, f(p.x), f(p.z), p.hp, p.alive ? 1 : 0]),
   });
@@ -279,7 +282,14 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room || !d) return;
     if (room.mode === 'pvp') {
-      socket.to(code).emit('opponentState', d);
+      if (!room.started || room.over) return;
+      const state = {
+        x: clamp(Number(d.x) || 0, -COOP.ARENA, COOP.ARENA),
+        z: clamp(Number(d.z) || 0, -COOP.ARENA, COOP.ARENA),
+        rotation: clamp(Number(d.rotation) || 0, -Math.PI, Math.PI),
+        hp: clamp(Number(d.hp) || 0, 0, 150),
+      };
+      socket.to(code).emit('opponentState', state);
     } else {
       const p = room.players.find((x) => x.id === socket.id);
       if (p && p.alive) {
@@ -295,6 +305,7 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room || !d) return;
     if (room.mode === 'pvp') {
+      if (!room.started || room.over) return;
       socket.to(code).emit('opponentShoot', d);
       return;
     }
@@ -316,9 +327,11 @@ io.on('connection', (socket) => {
   socket.on('died', () => {
     const code = socket.data.room;
     const room = rooms[code];
-    if (!room || room.mode !== 'pvp') return;
+    if (!room || room.mode !== 'pvp' || room.over) return;
     const p = room.players.find((x) => x.id === socket.id);
-    io.to(code).emit('gameOver', { loser: p ? p.number : 0 });
+    if (!p) return;
+    room.over = true;
+    io.to(code).emit('gameOver', { loser: p.number });
   });
 
   // ----- Ngắt kết nối -----

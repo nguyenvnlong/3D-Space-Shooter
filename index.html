@@ -1,55 +1,68 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Space Shooter</title>
     <link rel="stylesheet" href="styles.css">
-
-    <!-- 1. Tải thư viện Socket.io trước ở thẻ HEAD -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
 </head>
 <body>
+    <div id="lobby-menu">
+        <main class="panel">
+            <section id="homePanel">
+                <h1>3D SPACE SHOOTER</h1>
+                <p class="tag">太空射擊 · 和朋友一起守護銀河！(Cùng bạn bè bảo vệ thiên hà!)</p>
 
-    <!-- Giao diện Trang chủ Chờ (Lobby Menu) -->
-    <div id="lobby-menu" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10, 10, 25, 0.9); color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; font-family: Arial, sans-serif;">
-        <h1 style="font-size: 42px; text-shadow: 0 0 10px #00d2ff; color: #00d2ff; margin-bottom: 20px;">3D 太空射擊：雙人對戰</h1>
-        
-        <div style="margin-bottom: 15px;">
-            <label>玩家名稱 (Tên): </label>
-            <input type="text" id="playerName" value="飛船大師" style="padding: 8px; font-size: 16px; border-radius: 5px; border: none;">
-        </div>
+                <div class="modes">
+                    <button id="modeCoop" class="mode">合作模式 Co-op<small>1-4 người, chủ phòng bắt đầu</small></button>
+                    <button id="modePvp" class="mode active">對戰模式 PvP<small>Đấu tay đôi 1 vs 1</small></button>
+                </div>
 
-        <div style="margin-bottom: 15px;">
-            <label>選擇戰艦 (Tàu chiến): </label>
-            <select id="shipSelect" style="padding: 8px; font-size: 16px; border-radius: 5px;">
-                <option value="1">🚀 幻影號 (Phantom)</option>
-                <option value="2">⚡ 閃電號 (Lightning)</option>
-                <option value="3">🛡️ 泰坦號 (Titan)</option>
-            </select>
-        </div>
+                <label class="field">玩家名稱 (Tên)
+                    <input type="text" id="playerName" value="飛船大師" maxlength="12">
+                </label>
+                <label class="field">選擇戰艦 (Tàu)
+                    <select id="shipSelect">
+                        <option value="1">Phantom</option>
+                        <option value="2">Lightning</option>
+                        <option value="3">Titan</option>
+                    </select>
+                </label>
+                <label class="field">選擇地圖 (Map)
+                    <select id="mapSelect">
+                        <option value="1">Deep Space</option>
+                        <option value="2">Asteroid Belt</option>
+                    </select>
+                </label>
 
-        <div style="margin-bottom: 25px;">
-            <label>選擇地圖 (Map): </label>
-            <select id="mapSelect" style="padding: 8px; font-size: 16px; border-radius: 5px;">
-                <option value="1">🌌 銀河深處 (Deep Space)</option>
-                <option value="2">☄️ 小行星帶 (Asteroid Belt)</option>
-            </select>
-        </div>
+                <div class="actions">
+                    <button id="btnCreateRoom" class="act create">建立房間 (Tạo phòng)</button>
+                    <button id="btnSolo" class="act solo">單人遊戲 (Chơi một mình)</button>
+                </div>
+                <div class="joinrow">
+                    <input type="text" id="roomCodeInput" placeholder="輸入4位房號" maxlength="4" inputmode="numeric" autocomplete="off">
+                    <button id="btnJoinRoom" class="act join">加入房間 (Vào phòng)</button>
+                </div>
+            </section>
 
-        <div style="display: flex; gap: 15px; margin-bottom: 20px;">
-            <button id="btnCreateRoom" style="padding: 12px 24px; font-size: 18px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer;">建立房間 (Tạo phòng)</button>
-        </div>
-
-        <div style="display: flex; gap: 10px; align-items: center;">
-            <input type="text" id="roomCodeInput" placeholder="輸入4位房號" maxlength="4" style="padding: 10px; font-size: 18px; width: 180px; text-align: center; border-radius: 5px; border: none;">
-            <button id="btnJoinRoom" style="padding: 10px 20px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer;">加入房間 (Vào phòng)</button>
-        </div>
-
-        <div id="statusText" style="margin-top: 25px; font-size: 20px; color: #ffca28; font-weight: bold;"></div>
+            <section id="waitPanel" class="hidden">
+                <h2>房號 (Mã phòng)</h2>
+                <div id="roomCodeBig">----</div>
+                <p id="waitInfo"></p>
+                <ul id="playerList"></ul>
+                <button id="btnStart" class="act start hidden">開始遊戲 (Bắt đầu)</button>
+            </section>
+        </main>
+        <div id="statusText" role="status" aria-live="polite">Đang kết nối server...</div>
     </div>
-
-    <!-- 2. Gọi file main.js DUY NHẤT 1 LẦN ở cuối BODY -->
     <script type="module" src="./src/main.js"></script>
 </body>
 </html>

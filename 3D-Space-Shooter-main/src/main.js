@@ -3,24 +3,36 @@ import * as THREE from 'three';
 // ==========================================
 // 1. KẾT NỐI SERVER + TRANG CHỦ + PHÒNG CHỜ
 // ==========================================
-// Mở bằng Live Server (cổng 5500) -> nối tới server local cổng 3000
-// Mở từ chính server (localhost:3000 hoặc link Render) -> tự nối cùng địa chỉ
-const SERVER_URL = location.port === '5500' ? 'http://localhost:3000' : null;
-const socket = SERVER_URL ? io(SERVER_URL) : io();
+const isLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const SERVER_URL = isLocal ? 'http://localhost:3000' : window.location.origin;
+const socket = io(SERVER_URL, { reconnection: true, timeout: 20000 });
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (msg) => { $('statusText').innerText = msg; };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-let selectedMode = 'coop';
+let selectedMode = 'pvp';
 let currentRoomCode = null;
 let myNumber = 1;
 let gameStarted = false;
+let soloMode = false;
+let soloShootTimer = 1.5;
 
-setStatus('⏳ 正在連線伺服器... (Đang kết nối, có thể mất 30-60 giây nếu server đang ngủ)');
-socket.on('connect', () => setStatus('✅ 已連線 (Đã kết nối server)'));
-socket.on('connect_error', () => setStatus('❌ 無法連線 (Chưa kết nối được server, đang thử lại...)'));
+setStatus('Đang kết nối server...');
+socket.onAny((event, ...args) => {
+    if (event !== 'snapshot') console.log(`[socket] ${event}`, ...args);
+});
+socket.onAnyOutgoing((event, ...args) => console.log(`[socket] emit ${event}`, ...args));
+socket.on('connect', () => setStatus('Đã kết nối'));
+socket.on('disconnect', (reason) => {
+    console.log('[socket] disconnect', reason);
+    setStatus('Đang kết nối server...');
+});
+socket.on('connect_error', (error) => {
+    console.warn('[socket] connect_error', error.message);
+    setStatus('Đang kết nối server...');
+});
 
 function pickMode(m) {
     selectedMode = m;
@@ -40,7 +52,8 @@ function getUserData() {
 }
 
 $('btnCreateRoom').addEventListener('click', () => {
-    socket.emit('createRoom', getUserData());
+    const userData = getUserData();
+    socket.emit('createRoom', userData);
     setStatus('正在建立房間... (Đang tạo phòng...)');
 });
 
@@ -50,7 +63,8 @@ $('btnJoinRoom').addEventListener('click', () => {
         alert('請輸入4位數房號！ (Vui lòng nhập đủ 4 số!)');
         return;
     }
-    socket.emit('joinRoom', { roomCode: code, userData: getUserData() });
+    const data = { roomCode: code, userData: getUserData() };
+    socket.emit('joinRoom', data);
     setStatus('正在加入房間... (Đang vào phòng...)');
 });
 
@@ -68,12 +82,14 @@ socket.on('roomCreated', (d) => {
     currentRoomCode = d.roomCode;
     myNumber = d.playerNumber;
     showWaiting(d.mode);
+    setStatus(`Đã tạo phòng ${currentRoomCode}`);
 });
 
 socket.on('roomJoined', (d) => {
     currentRoomCode = d.roomCode;
     myNumber = d.playerNumber;
     showWaiting(d.mode);
+    setStatus(`Đã vào phòng ${currentRoomCode}`);
 });
 
 socket.on('lobbyUpdate', (d) => {
@@ -82,9 +98,29 @@ socket.on('lobbyUpdate', (d) => {
     ).join('');
     const isHost = myNumber === d.host;
     $('btnStart').classList.toggle('hidden', !(isHost && d.mode === 'coop'));
+    if (d.players.length > 1 && d.mode === 'pvp') setStatus('Đã kết nối, đối thủ đã vào phòng');
 });
 
 $('btnStart').onclick = () => socket.emit('startGame');
+
+$('btnSolo').addEventListener('click', () => {
+    if (gameStarted) return;
+    gameStarted = true;
+    soloMode = true;
+    currentRoomCode = '單人';
+    myNumber = 1;
+    $('lobby-menu').style.display = 'none';
+    const user = getUserData();
+    init3DGame({
+        mode: 'pvp',
+        map: user.map,
+        solo: true,
+        players: [
+            { number: 1, name: user.name, ship: user.ship },
+            { number: 2, name: 'CPU', ship: '1' },
+        ],
+    });
+});
 
 socket.on('gameStart', (data) => {
     if (gameStarted) return;
@@ -97,8 +133,10 @@ socket.on('gameStart', (data) => {
 });
 
 socket.on('errorMsg', (msg) => {
-    alert(msg);
-    setStatus('');
+    const message = String(msg || 'Server error');
+    if (/không tồn tại|找不到房間/i.test(message)) setStatus('Phòng không tồn tại');
+    else if (/đã đầy|房間已滿/i.test(message)) setStatus('Phòng đầy');
+    else setStatus(message);
 });
 
 // ==========================================
@@ -122,6 +160,7 @@ let gameTime = 0, lastFrame = 0, lastSend = 0, shootCd = 0;
 let hudEl, msgEl;
 
 const oppTarget = { x: 0, z: -12 };
+let oppRotationTarget = 0;
 const bullets = [];          // PvP: đạn tự mô phỏng ở máy
 const decorRocks = [];       // PvP map 2: thiên thạch trang trí
 const keys = {};
@@ -150,6 +189,8 @@ const boomGeo = new THREE.SphereGeometry(1, 12, 12);
 // ==========================================
 function init3DGame(data) {
     mode = data.mode;
+    soloMode = !!data.solo;
+    soloShootTimer = 1.5;
     const me = data.players.find((p) => p.number === myNumber) || data.players[0];
     myStats = SHIPS[me.ship] || SHIPS['1'];
     myHp = myStats.hp;
@@ -275,9 +316,9 @@ function updateHUD() {
         return;
     }
     const lines = Object.entries(playersInfo).map(([n, p]) =>
-        `${p.alive ? '🟢' : '💀'} ${esc(p.name)}${Number(n) === myNumber ? ' (bạn)' : ''}: ${Math.max(0, p.hp)}/${p.max}`);
+        `${p.alive ? '🟢' : '💀'} ${esc(p.name)}${Number(n) === myNumber ? ' (bạn)' : ''} - Máu: ${Math.max(0, p.hp)}/${p.max}`);
     hudEl.innerHTML =
-        `🏆 ${coopStats.score} &nbsp;|&nbsp; 🌠 Cấp ${coopStats.level} &nbsp;|&nbsp; ⏱️ ${coopStats.time}s &nbsp;|&nbsp; ⚡ x${coopStats.mul.toFixed(2)}` +
+        `🏆 Điểm đội: ${coopStats.score} &nbsp;|&nbsp; 🌠 Cấp ${coopStats.level} &nbsp;|&nbsp; ⏱️ ${coopStats.time}s &nbsp;|&nbsp; ⚡ x${coopStats.mul.toFixed(2)}` +
         `<br>🛡️ 護盾 (Lá chắn): ${'🟦'.repeat(Math.max(0, coopStats.shield))} &nbsp;|&nbsp; 房號 ${currentRoomCode}` +
         `<br>${lines.join('<br>')}` +
         (alive ? '' : '<br>💥 你已陣亡，觀戰中 (Bạn đã hạ gục, đang xem đồng đội)');
@@ -312,7 +353,7 @@ function spawnBullet(x, z, vx, vz, mine) {
 function die() {
     alive = false;
     myShip.visible = false;
-    socket.emit('died');
+    if (!soloMode) socket.emit('died');
 }
 
 function update(dt, now) {
@@ -338,10 +379,10 @@ function update(dt, now) {
             if (mode === 'pvp') {
                 const b = { x: myShip.position.x, z: myShip.position.z - 1.8, vx: 0, vz: -30 * speedMul() };
                 spawnBullet(b.x, b.z, b.vx, b.vz, true);
-                socket.emit('shoot', b);
+                if (!soloMode) socket.emit('shoot', b);
             } else {
                 // Co-op: server tạo viên đạn rồi gửi về cho mọi người
-                socket.emit('shoot', { x: myShip.position.x, z: myShip.position.z });
+                if (!soloMode) socket.emit('shoot', { x: myShip.position.x, z: myShip.position.z });
             }
         }
     }
@@ -372,9 +413,14 @@ function update(dt, now) {
     }
 
     // --- Gửi vị trí 20 lần/giây ---
-    if (now - lastSend > 50) {
+    if (!soloMode && now - lastSend > 50) {
         lastSend = now;
-        socket.emit('state', { x: myShip.position.x, z: myShip.position.z, hp: myHp });
+        socket.emit('state', {
+            x: myShip.position.x,
+            z: myShip.position.z,
+            rotation: myShip.rotation.z,
+            hp: myHp,
+        });
     }
 
     updateHUD();
@@ -382,8 +428,18 @@ function update(dt, now) {
 
 function updatePvp(dt) {
     const k = Math.min(1, dt * 12);
+    if (soloMode) {
+        oppTarget.x = Math.sin(gameTime * 0.8) * 8;
+        oppTarget.z = -12;
+        soloShootTimer -= dt;
+        if (soloShootTimer <= 0) {
+            soloShootTimer = 1.2;
+            spawnBullet(oppShip.position.x, oppShip.position.z + 1.8, 0, 24 * speedMul(), false);
+        }
+    }
     oppShip.position.x += (oppTarget.x - oppShip.position.x) * k;
     oppShip.position.z += (oppTarget.z - oppShip.position.z) * k;
+    oppShip.rotation.z += (oppRotationTarget - oppShip.rotation.z) * k;
 
     for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
@@ -391,6 +447,20 @@ function updatePvp(dt) {
         b.mesh.position.z += b.vz * dt;
 
         let remove = Math.abs(b.mesh.position.x) > 30 || Math.abs(b.mesh.position.z) > 30;
+
+        if (soloMode && b.mine) {
+            const dx = b.mesh.position.x - oppShip.position.x;
+            const dz = b.mesh.position.z - oppShip.position.z;
+            if (dx * dx + dz * dz < 2.25) {
+                oppHp -= 10;
+                remove = true;
+                if (oppHp <= 0 && !gameEnded) {
+                    gameEnded = true;
+                    oppShip.visible = false;
+                    showMessage('🏆 Bạn đã thắng!');
+                }
+            }
+        }
 
         // Chỉ máy của người bị bắn mới tính sát thương (tránh tính 2 lần)
         if (!b.mine && alive) {
@@ -418,6 +488,8 @@ function updateCoop(dt) {
     }
     const k2 = Math.min(1, dt * 25);
     for (const o of astMeshes.values()) {
+        o.tx += o.vx * dt;
+        o.tz += o.vz * dt;
         o.mesh.position.x += (o.tx - o.mesh.position.x) * k2;
         o.mesh.position.z += (o.tz - o.mesh.position.z) * k2;
         o.mesh.rotation.x += dt * o.spin;
@@ -470,9 +542,9 @@ socket.on('snapshot', (s) => {
         }
     }
 
-    // Thiên thạch: [id, x, z, bán kính]
+    // Thiên thạch: [id, x, z, vx, vz, bán kính]
     const seenA = new Set();
-    for (const [id, x, z, r] of s.a) {
+    for (const [id, x, z, vx, vz, r] of s.a) {
         seenA.add(id);
         let o = astMeshes.get(id);
         if (!o) {
@@ -481,11 +553,13 @@ socket.on('snapshot', (s) => {
             mesh.position.set(x, 0, z);
             mesh.rotation.set(Math.random() * 3, Math.random() * 3, 0);
             scene.add(mesh);
-            o = { mesh, tx: x, tz: z, spin: (Math.random() - 0.5) * 2.5 };
+            o = { mesh, tx: x, tz: z, vx, vz, spin: (Math.random() - 0.5) * 2.5 };
             astMeshes.set(id, o);
         }
         o.tx = x;
         o.tz = z;
+        o.vx = vx;
+        o.vz = vz;
     }
     for (const [id, o] of astMeshes) {
         if (!seenA.has(id)) {
@@ -540,26 +614,29 @@ socket.on('playerLeft', ({ number }) => {
 // (đảo dấu x, z để mỗi người luôn thấy mình ở dưới màn hình)
 // ==========================================
 socket.on('opponentState', (d) => {
-    if (!oppShip) return;
+    if (soloMode || !oppShip) return;
     oppTarget.x = -d.x;
     oppTarget.z = -d.z;
+    oppRotationTarget = -d.rotation;
     oppHp = d.hp;
 });
 
 socket.on('opponentShoot', (d) => {
-    if (!scene) return;
+    if (soloMode || !scene) return;
     spawnBullet(-d.x, -d.z, -d.vx, -d.vz, false);
 });
 
 socket.on('gameOver', ({ loser }) => {
+    if (soloMode) return;
     if (gameEnded) return;
     gameEnded = true;
     if (loser !== myNumber && oppShip) oppShip.visible = false;
-    showMessage(loser === myNumber ? '💥 你輸了 (Bạn đã thua)' : '🏆 你贏了 (Bạn đã thắng!)');
+    showMessage(loser === myNumber ? 'THUA - Bạn đã thua' : 'THẮNG - Bạn đã thắng!');
 });
 
 socket.on('opponentLeft', () => {
+    if (soloMode) return;
     if (gameEnded) return;
     gameEnded = true;
-    showMessage('對手已離開 (Đối thủ đã thoát)');
+    showMessage('Đối thủ đã rời phòng');
 });
