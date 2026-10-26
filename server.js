@@ -528,15 +528,15 @@ io.on('connection', (socket) => {
   });
 
   socket.on('joinRoom', (data) => {
-    if (socket.data.room) return socket.emit('errorMsg', '你已在房間內 (Bạn đang ở trong một phòng)');
+    if (socket.data.room) return socket.emit('errorMsg', 'Bạn đã ở trong phòng');
     const code = String((data && data.roomCode) || '').trim();
     const ud = (data && data.userData) || {};
     const room = rooms[code];
 
-    if (!room) return socket.emit('errorMsg', '找不到房間 (Mã phòng không tồn tại)');
-    if (room.started) return socket.emit('errorMsg', '遊戲已開始 (Phòng đã bắt đầu chơi)');
+    if (!room) return socket.emit('errorMsg', 'Mã phòng không tồn tại');
+    if (room.started) return socket.emit('errorMsg', 'Phòng đã bắt đầu');
     const number = freeNumber(room);
-    if (!number) return socket.emit('errorMsg', '房間已滿 (Phòng đã đầy)');
+    if (!number) return socket.emit('errorMsg', 'Phòng đã đầy');
 
     room.players.push(newPlayer(socket.id, number, ud));
     room.botEnabled = room.botEnabled || !!(ud.bot === true || ud.bot === 'true');

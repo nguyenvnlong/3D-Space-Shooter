@@ -55,18 +55,18 @@ function getUserData() {
 $('btnCreateRoom').addEventListener('click', () => {
     const userData = getUserData();
     socket.emit('createRoom', userData);
-    setStatus('正在建立房間... (Đang tạo phòng...)');
+    setStatus('Đang tạo phòng...');
 });
 
 $('btnJoinRoom').addEventListener('click', () => {
     const code = $('roomCodeInput').value.trim();
     if (code.length !== 4) {
-        alert('請輸入4位數房號！ (Vui lòng nhập đủ 4 số!)');
+        alert('Vui lòng nhập đủ 4 số!');
         return;
     }
     const data = { roomCode: code, userData: getUserData() };
     socket.emit('joinRoom', data);
-    setStatus('正在加入房間... (Đang vào phòng...)');
+    setStatus('Đang vào phòng...');
 });
 
 function showWaiting(mode) {
@@ -74,8 +74,8 @@ function showWaiting(mode) {
     $('waitPanel').classList.remove('hidden');
     $('roomCodeBig').innerText = currentRoomCode;
     $('waitInfo').innerText = mode === 'coop'
-        ? '把房號傳給朋友 (Gửi mã cho bạn bè, tối đa 4 người. Chủ phòng bấm Bắt đầu khi đủ người)'
-        : '等待對手加入 (Đang chờ 1 đối thủ, tự bắt đầu khi đủ 2 người)';
+        ? 'Gửi mã cho bạn bè, tối đa 4 người. Chủ phòng bấm Bắt đầu khi đủ người.'
+        : 'Đang chờ đối thủ, tự bắt đầu khi đủ 2 người.';
     setStatus('');
 }
 
@@ -108,7 +108,7 @@ $('btnSolo').addEventListener('click', () => {
     if (gameStarted) return;
     gameStarted = true;
     soloMode = true;
-    currentRoomCode = '單人';
+    currentRoomCode = 'SOLO';
     myNumber = 1;
     $('lobby-menu').style.display = 'none';
     const user = getUserData();
@@ -128,7 +128,7 @@ socket.on('gameStart', (data) => {
     if (gameStarted) return;
     gameStarted = true;
     currentMap = data.map || currentMap;
-    setStatus('遊戲開始！ (Trò chơi bắt đầu!)');
+    setStatus('Trò chơi bắt đầu!');
     setTimeout(() => {
         $('lobby-menu').style.display = 'none';
         init3DGame(data);
@@ -137,8 +137,8 @@ socket.on('gameStart', (data) => {
 
 socket.on('errorMsg', (msg) => {
     const message = String(msg || 'Server error');
-    if (/không tồn tại|找不到房間/i.test(message)) setStatus('Phòng không tồn tại');
-    else if (/đã đầy|房間已滿/i.test(message)) setStatus('Phòng đầy');
+    if (/không tồn tại|find room|room does not exist/i.test(message)) setStatus('Phòng không tồn tại');
+    else if (/đã đầy|room full|full/i.test(message)) setStatus('Phòng đầy');
     else setStatus(message);
 });
 
@@ -441,14 +441,14 @@ function updateHUD() {
         `${p.alive ? '🟢' : '💀'} ${esc(p.name)}${Number(n) === myNumber ? ' (bạn)' : ''} - Máu: ${Math.max(0, p.hp)}/${p.max}`);
     hudEl.innerHTML =
         `🏆 Điểm đội: ${coopStats.score} &nbsp;|&nbsp; 🌠 Cấp ${coopStats.level} &nbsp;|&nbsp; ⏱️ ${coopStats.time}s &nbsp;|&nbsp; ⚡ x${coopStats.mul.toFixed(2)}` +
-        `<br>🛡️ 護盾 (Lá chắn): ${'🟦'.repeat(Math.max(0, coopStats.shield))} &nbsp;|&nbsp; 房號 ${currentRoomCode}` +
+        `<br>🛡️ Bảo vệ: ${'🟦'.repeat(Math.max(0, coopStats.shield))} &nbsp;|&nbsp; Mã phòng ${currentRoomCode}` +
         `<br>${lines.join('<br>')}` +
-        (alive ? '' : '<br>💥 你已陣亡，觀戰中 (Bạn đã hạ gục, đang xem đồng đội)');
+        (alive ? '' : '<br>💥 Bạn đã chết, đang xem đội');
 }
 
 function showMessage(html) {
     if (!msgEl) return;
-    msgEl.innerHTML = `<div>${html}</div><button id="btnAgain" style="padding:12px 28px;font-size:20px;border:none;border-radius:6px;background:#28a745;color:#fff;cursor:pointer;">再玩一次 (Chơi lại)</button>`;
+    msgEl.innerHTML = `<div>${html}</div><button id="btnAgain" style="padding:12px 28px;font-size:20px;border:none;border-radius:6px;background:#28a745;color:#fff;cursor:pointer;">Chơi lại</button>`;
     msgEl.style.display = 'flex';
     document.getElementById('btnAgain').onclick = () => location.reload();
 }
@@ -495,25 +495,14 @@ function spawnBossShot() {
     if (!boss || !scene) return;
 
     const target = myShip && myShip.position ? myShip.position : new THREE.Vector3(0, 0, 12);
-    let aimX = target.x;
-    let aimZ = target.z;
-
-    for (const other of Object.values(teamShips)) {
-        if (other && other.mesh && other.mesh.visible) {
-            aimX = other.mesh.position.x;
-            aimZ = other.mesh.position.z;
-            break;
-        }
-    }
-
     const shotGeo = new THREE.SphereGeometry(0.55, 10, 10);
     const shotMat = new THREE.MeshBasicMaterial({ color: 0xff6a6a });
     const mesh = new THREE.Mesh(shotGeo, shotMat);
     mesh.position.copy(boss.mesh.position);
     scene.add(mesh);
 
-    const dx = aimX - boss.mesh.position.x;
-    const dz = aimZ - boss.mesh.position.z;
+    const dx = target.x - boss.mesh.position.x;
+    const dz = target.z - boss.mesh.position.z;
     const dist = Math.hypot(dx, dz) || 1;
 
     bossShots.push({
@@ -915,15 +904,15 @@ socket.on('coopOver', ({ score, time, level, reason }) => {
     if (gameEnded) return;
     gameEnded = true;
     const why = reason === 'shield'
-        ? '🛡️ 護盾耗盡 (Lá chắn đã cạn)'
-        : '💥 全員陣亡 (Cả đội đã hy sinh)';
+        ? '🛡️ Lá chắn đã cạn'
+        : '💥 Tất cả đã chết';
     showMessage(`${why}<br><br>🏆 Điểm: ${score}<br>🌠 Cấp: ${level} &nbsp;|&nbsp; ⏱️ ${time}s`);
 });
 
 socket.on('playerLeft', ({ number }) => {
     if (playersInfo[number]) {
         playersInfo[number].alive = false;
-        playersInfo[number].name += ' (đã thoát)';
+        playersInfo[number].name += ' (đã rời)';
     }
 });
 
