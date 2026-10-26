@@ -157,7 +157,9 @@ let scene, camera, renderer, starField;
 let myShip, myStats, oppShip;
 let myHp = 100, oppHp = 100, alive = true, gameEnded = false;
 let gameTime = 0, lastFrame = 0, lastSend = 0, shootCd = 0;
-let hudEl, msgEl;
+let hudEl, msgEl, bossHealthWrap;
+let boss = null;
+let bossShots = [];
 
 const oppTarget = { x: 0, z: -12 };
 let oppRotationTarget = 0;
@@ -185,7 +187,7 @@ const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a7f73, roughness: 1, 
 const boomGeo = new THREE.SphereGeometry(1, 12, 12);
 
 // ==========================================
-// 3. KHỞI TẠO ĐỒ HỌA 3D
+// 3. KHỞI TẠO ĐỒ HỌC 3D
 // ==========================================
 function init3DGame(data) {
     mode = data.mode;
@@ -304,8 +306,33 @@ function createHUD() {
     document.body.appendChild(hudEl);
 
     msgEl = document.createElement('div');
-    msgEl.style.cssText = 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:24px;background:rgba(0,0,0,.7);color:#fff;font:bold 36px Arial;z-index:200;text-align:center;padding:20px;';
+    msgEl.style.cssText = 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:24px;background:rgba(0,0,0,.7);color:#fff;font:bold 36px Arial;z-index:60;';
     document.body.appendChild(msgEl);
+
+    bossHealthWrap = document.createElement('div');
+    bossHealthWrap.style.cssText = 'position:fixed;left:50%;top:18px;transform:translateX(-50%);width:min(420px,62vw);padding:10px 12px;border-radius:16px;background:rgba(15,15,20,.8);border:1px solid rgba(255,255,255,.24);box-shadow:0 6px 24px rgba(0,0,0,.3);display:none;z-index:70;color:#fff;font:600 14px Arial;';
+    bossHealthWrap.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span>Final Boss</span>
+            <span id="bossHpText">0 / 0</span>
+        </div>
+        <div style="height:16px;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden;">
+            <div id="bossHpFill" style="height:100%;width:0%;background:linear-gradient(90deg,#ff5b5b,#ffbf69);border-radius:999px;transition:width .12s ease;"></div>
+        </div>
+    `;
+    document.body.appendChild(bossHealthWrap);
+}
+
+function updateBossBar() {
+    if (!bossHealthWrap || !boss) {
+        if (bossHealthWrap) bossHealthWrap.style.display = 'none';
+        return;
+    }
+    const fill = document.getElementById('bossHpFill');
+    const text = document.getElementById('bossHpText');
+    if (fill) fill.style.width = `${Math.max(0, (boss.hp / boss.maxHp) * 100)}%`;
+    if (text) text.textContent = `${Math.max(0, Math.ceil(boss.hp))} / ${boss.maxHp}`;
+    bossHealthWrap.style.display = 'block';
 }
 
 function updateHUD() {
@@ -350,6 +377,74 @@ function spawnBullet(x, z, vx, vz, mine) {
     bullets.push({ mesh, vx, vz, mine });
 }
 
+function spawnBossShot() {
+    if (!boss || !scene) return;
+
+    const target = myShip && myShip.position ? myShip.position : new THREE.Vector3(0, 0, 12);
+    let aimX = target.x;
+    let aimZ = target.z;
+
+    for (const other of Object.values(teamShips)) {
+        if (other && other.mesh && other.mesh.visible) {
+            aimX = other.mesh.position.x;
+            aimZ = other.mesh.position.z;
+            break;
+        }
+    }
+
+    const shotGeo = new THREE.SphereGeometry(0.45, 10, 10);
+    const shotMat = new THREE.MeshBasicMaterial({ color: 0xff6a6a });
+    const mesh = new THREE.Mesh(shotGeo, shotMat);
+    mesh.position.copy(boss.mesh.position);
+    scene.add(mesh);
+
+    const dx = aimX - boss.mesh.position.x;
+    const dz = aimZ - boss.mesh.position.z;
+    const dist = Math.hypot(dx, dz) || 1;
+
+    bossShots.push({
+        mesh,
+        vx: (dx / dist) * 12,
+        vz: (dz / dist) * 12,
+    });
+}
+
+function spawnBoss() {
+    if (!scene || mode !== 'coop' || boss) return;
+
+    const bossGeo = new THREE.IcosahedronGeometry(2.8, 1);
+    const bossMat = new THREE.MeshStandardMaterial({
+        color: 0xff4d4d,
+        emissive: 0x440000,
+        metalness: 0.5,
+        roughness: 0.35,
+    });
+
+    const mesh = new THREE.Mesh(bossGeo, bossMat);
+    mesh.position.set(0, 0, -12);
+    scene.add(mesh);
+
+    boss = {
+        mesh,
+        hp: 500,
+        maxHp: 500,
+        fireTimer: 1.1,
+        drift: 0,
+    };
+    updateBossBar();
+}
+
+function destroyBoss() {
+    if (!boss) return;
+    scene.remove(boss.mesh);
+    boss = null;
+    bossShots = [];
+    if (bossHealthWrap) bossHealthWrap.style.display = 'none';
+    setStatus('Boss đã bị hạ!');
+    showMessage('🏆 Final Boss đã bị hạ!<br><br>Chiến thắng!');
+    gameEnded = true;
+}
+
 function die() {
     alive = false;
     myShip.visible = false;
@@ -358,6 +453,8 @@ function die() {
 
 function update(dt, now) {
     gameTime += dt;
+
+    if (mode === 'coop' && !boss && coopStats.time >= 28) spawnBoss();
 
     // --- Di chuyển + bắn (tàu của mình) ---
     if (alive) {
@@ -381,7 +478,6 @@ function update(dt, now) {
                 spawnBullet(b.x, b.z, b.vx, b.vz, true);
                 if (!soloMode) socket.emit('shoot', b);
             } else {
-                // Co-op: server tạo viên đạn rồi gửi về cho mọi người
                 if (!soloMode) socket.emit('shoot', { x: myShip.position.x, z: myShip.position.z });
             }
         }
@@ -498,6 +594,55 @@ function updateCoop(dt) {
     for (const o of bulMeshes.values()) {
         o.mesh.position.x += (o.tx - o.mesh.position.x) * k2;
         o.mesh.position.z += (o.tz - o.mesh.position.z) * k2;
+    }
+
+    if (boss) {
+        boss.drift += dt;
+        boss.mesh.position.x = Math.sin(boss.drift * 1.2) * 8;
+        boss.mesh.position.z = -12 + Math.cos(boss.drift * 1.7) * 2;
+        boss.mesh.rotation.x += dt * 2.4;
+        boss.mesh.rotation.y += dt * 2.8;
+        boss.fireTimer -= dt;
+        if (boss.fireTimer <= 0) {
+            spawnBossShot();
+            boss.fireTimer = 1.15;
+        }
+
+        for (let i = bossShots.length - 1; i >= 0; i--) {
+            const shot = bossShots[i];
+            shot.mesh.position.x += shot.vx * dt;
+            shot.mesh.position.z += shot.vz * dt;
+
+            const hitDist = Math.hypot(shot.mesh.position.x - myShip.position.x, shot.mesh.position.z - myShip.position.z);
+            if (hitDist < 1.8) {
+                myHp = Math.max(0, myHp - 12);
+                if (myHp <= 0) die();
+                scene.remove(shot.mesh);
+                bossShots.splice(i, 1);
+                continue;
+            }
+
+            if (Math.abs(shot.mesh.position.x) > 30 || Math.abs(shot.mesh.position.z) > 30) {
+                scene.remove(shot.mesh);
+                bossShots.splice(i, 1);
+            }
+        }
+
+        const bulletEntries = [...bulMeshes.entries()];
+        for (const [id, bullet] of bulletEntries) {
+            if (!bullet || !bullet.mesh) continue;
+            if (bullet.mesh.position.distanceTo(boss.mesh.position) < 3.1) {
+                boss.hp -= 25;
+                scene.remove(bullet.mesh);
+                bulMeshes.delete(id);
+                if (boss.hp <= 0) {
+                    destroyBoss();
+                    return;
+                }
+            }
+        }
+
+        updateBossBar();
     }
 }
 
