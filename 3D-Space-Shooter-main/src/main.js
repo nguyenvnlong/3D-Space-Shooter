@@ -157,7 +157,7 @@ let scene, camera, renderer, starField;
 let myShip, myStats, oppShip;
 let myHp = 100, oppHp = 100, alive = true, gameEnded = false;
 let gameTime = 0, lastFrame = 0, lastSend = 0, shootCd = 0;
-let hudEl, msgEl, bossHealthWrap;
+let hudEl, msgEl, bossHealthWrap, shipHealthBar;
 let boss = null;
 let bossShots = [];
 
@@ -168,7 +168,7 @@ const decorRocks = [];       // PvP map 2: thiên thạch trang trí
 const keys = {};
 
 // Co-op: mọi thứ lấy từ server
-const teamShips = {};        // { số: {mesh, tx, tz} }
+const teamShips = {};        // { s���: {mesh, tx, tz} }
 const playersInfo = {};      // { số: {name, hp, max, alive} }
 const astMeshes = new Map(); // id -> {mesh, tx, tz, spin}
 const bulMeshes = new Map(); // id -> {mesh, tx, tz}
@@ -187,7 +187,7 @@ const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a7f73, roughness: 1, 
 const boomGeo = new THREE.SphereGeometry(1, 12, 12);
 
 // ==========================================
-// 3. KHỞI TẠO ĐỒ HỌC 3D
+// 3. KHỞI TẠO ĐỒ HỌA 3D
 // ==========================================
 function init3DGame(data) {
     mode = data.mode;
@@ -230,7 +230,7 @@ function init3DGame(data) {
         oppShip = makeShipMesh(OPP_COLOR, 1);
         oppShip.position.set(0, 0, -12);
         scene.add(oppShip);
-        if (data.map === '2') createDecorRocks();
+        if (data.map === '1' || data.map === '2') createDecorRocks(data.map === '2' ? 20 : 12);
     } else {
         myShip = makeShipMesh(myStats.color, -1);
         myShip.position.set(START_X[myNumber - 1] ?? 0, 0, 12);
@@ -278,11 +278,26 @@ function createStars() {
     scene.add(starField);
 }
 
-function createDecorRocks() {
-    for (let i = 0; i < 25; i++) {
+function createDecorRocks(count = 12) {
+    for (const rock of decorRocks) {
+        scene.remove(rock);
+    }
+    decorRocks.length = 0;
+
+    for (let i = 0; i < count; i++) {
         const rock = new THREE.Mesh(rockGeo, rockMat);
-        rock.position.set((Math.random() - 0.5) * 80, -6 - Math.random() * 6, (Math.random() - 0.5) * 50);
-        rock.scale.setScalar(0.8 + Math.random() * 2);
+        const baseX = (Math.random() - 0.5) * 26;
+        const baseZ = -10 + (Math.random() - 0.5) * 20;
+        rock.position.set(baseX, 0, baseZ);
+        rock.scale.setScalar(0.9 + Math.random() * 1.7);
+        rock.rotation.set(Math.random() * 3, Math.random() * 3, 0);
+        rock.userData = {
+            baseX,
+            baseZ,
+            phase: Math.random() * Math.PI * 2,
+            spread: 2.2 + Math.random() * 2.3,
+            speed: 0.7 + Math.random() * 1.5,
+        };
         scene.add(rock);
         decorRocks.push(rock);
     }
@@ -305,6 +320,17 @@ function createHUD() {
     hudEl.style.cssText = 'position:fixed;top:10px;left:10px;color:#fff;font:18px Arial;text-shadow:0 0 6px #000;z-index:50;line-height:1.6;';
     document.body.appendChild(hudEl);
 
+    shipHealthBar = document.createElement('div');
+    shipHealthBar.style.cssText = 'position:fixed;right:22px;top:20px;width:220px;z-index:70;display:none;';
+    shipHealthBar.innerHTML = `
+        <div style="position:relative;height:34px;border-radius:18px;background:rgba(15,18,25,.68);border:1px solid rgba(255,255,255,.18);overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.28);">
+            <div style="position:absolute;inset:0;clip-path:polygon(0% 50%, 18% 18%, 68% 18%, 100% 50%, 68% 82%, 18% 82%);background:linear-gradient(90deg, rgba(87,234,255,.3), rgba(34,179,255,.12));"></div>
+            <div id="shipHpFill" style="position:absolute;left:0;top:0;height:100%;width:100%;background:linear-gradient(90deg,#48f5c3,#56deff,#aaf9a6);clip-path:polygon(0% 50%, 18% 18%, 68% 18%, 100% 50%, 68% 82%, 18% 82%);transition:width .14s ease;"></div>
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#04141a;font:700 12px Arial;letter-spacing:.12em;text-shadow:0 0 4px rgba(255,255,255,.75);">HP <span id="shipHpText">100</span></div>
+        </div>
+    `;
+    document.body.appendChild(shipHealthBar);
+
     msgEl = document.createElement('div');
     msgEl.style.cssText = 'position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;gap:24px;background:rgba(0,0,0,.7);color:#fff;font:bold 36px Arial;z-index:60;';
     document.body.appendChild(msgEl);
@@ -316,8 +342,9 @@ function createHUD() {
             <span>Final Boss</span>
             <span id="bossHpText">0 / 0</span>
         </div>
-        <div style="height:16px;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden;">
-            <div id="bossHpFill" style="height:100%;width:0%;background:linear-gradient(90deg,#ff5b5b,#ffbf69);border-radius:999px;transition:width .12s ease;"></div>
+        <div style="height:16px;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden;position:relative;">
+            <div style="position:absolute;inset:0;clip-path:polygon(0% 50%, 8% 18%, 92% 18%, 100% 50%, 92% 82%, 8% 82%);background:rgba(255,255,255,.08);"></div>
+            <div id="bossHpFill" style="height:100%;width:0%;background:linear-gradient(90deg,#ff5b5b,#ffbf69);border-radius:999px;transition:width .12s ease;clip-path:polygon(0% 50%, 8% 18%, 92% 18%, 100% 50%, 92% 82%, 8% 82%);"></div>
         </div>
     `;
     document.body.appendChild(bossHealthWrap);
@@ -335,18 +362,31 @@ function updateBossBar() {
     bossHealthWrap.style.display = 'block';
 }
 
+function updateShipHealthBar() {
+    if (!shipHealthBar) return;
+    const max = myStats && myStats.hp ? myStats.hp : 100;
+    const ratio = clamp(myHp / max, 0, 1);
+    const fill = document.getElementById('shipHpFill');
+    const text = document.getElementById('shipHpText');
+    if (fill) fill.style.width = `${ratio * 100}%`;
+    if (text) text.textContent = `${Math.max(0, Math.round(myHp))}`;
+    shipHealthBar.style.display = mode === 'pvp' ? 'block' : 'none';
+}
+
 function updateHUD() {
+    updateShipHealthBar();
+
     if (mode === 'pvp') {
         hudEl.innerHTML =
-            `❤️ HP: ${Math.max(0, Math.round(myHp))} &nbsp;|&nbsp; 🎯 對手 HP: ${Math.max(0, Math.round(oppHp))}` +
-            `<br>⚡ 速度 x${speedMul().toFixed(2)} &nbsp;|&nbsp; 房號 ${currentRoomCode}`;
+            `❤️ Đối thủ: ${Math.max(0, Math.round(oppHp))} &nbsp;|&nbsp; ⚡ x${speedMul().toFixed(2)}` +
+            `<br> 🏷️ Room ${currentRoomCode || 'solo'}`;
         return;
     }
     const lines = Object.entries(playersInfo).map(([n, p]) =>
         `${p.alive ? '🟢' : '💀'} ${esc(p.name)}${Number(n) === myNumber ? ' (bạn)' : ''} - Máu: ${Math.max(0, p.hp)}/${p.max}`);
     hudEl.innerHTML =
         `🏆 Điểm đội: ${coopStats.score} &nbsp;|&nbsp; 🌠 Cấp ${coopStats.level} &nbsp;|&nbsp; ⏱️ ${coopStats.time}s &nbsp;|&nbsp; ⚡ x${coopStats.mul.toFixed(2)}` +
-        `<br>🛡️ 護盾 (Lá chắn): ${'🟦'.repeat(Math.max(0, coopStats.shield))} &nbsp;|&nbsp; 房號 ${currentRoomCode}` +
+        `<br>���️ 護盾 (Lá chắn): ${'🟦'.repeat(Math.max(0, coopStats.shield))} &nbsp;|&nbsp; 房號 ${currentRoomCode}` +
         `<br>${lines.join('<br>')}` +
         (alive ? '' : '<br>💥 你已陣亡，觀戰中 (Bạn đã hạ gục, đang xem đồng đội)');
 }
@@ -537,12 +577,34 @@ function updatePvp(dt) {
     oppShip.position.z += (oppTarget.z - oppShip.position.z) * k;
     oppShip.rotation.z += (oppRotationTarget - oppShip.rotation.z) * k;
 
+    for (const rock of decorRocks) {
+        const { baseX, baseZ, phase, spread, speed } = rock.userData;
+        rock.position.x = baseX + Math.sin(gameTime * speed + phase) * spread;
+        rock.position.z = baseZ + Math.cos(gameTime * (speed * 0.8) + phase) * (spread * 0.75);
+        rock.rotation.x += dt * (0.4 + speed * 0.2);
+        rock.rotation.y += dt * (0.5 + speed * 0.25);
+
+        const shipDistMine = Math.hypot(myShip.position.x - rock.position.x, myShip.position.z - rock.position.z);
+        if (shipDistMine < 2.2) myHp = Math.max(0, myHp - 8 * dt);
+        const shipDistOpp = Math.hypot(oppShip.position.x - rock.position.x, oppShip.position.z - rock.position.z);
+        if (shipDistOpp < 2.2) oppHp = Math.max(0, oppHp - 8 * dt);
+    }
+
     for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
         b.mesh.position.x += b.vx * dt;
         b.mesh.position.z += b.vz * dt;
 
         let remove = Math.abs(b.mesh.position.x) > 30 || Math.abs(b.mesh.position.z) > 30;
+
+        for (const rock of decorRocks) {
+            const dx = b.mesh.position.x - rock.position.x;
+            const dz = b.mesh.position.z - rock.position.z;
+            if (dx * dx + dz * dz < 1.6) {
+                remove = true;
+                break;
+            }
+        }
 
         if (soloMode && b.mine) {
             const dx = b.mesh.position.x - oppShip.position.x;
