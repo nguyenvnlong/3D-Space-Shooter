@@ -18,6 +18,7 @@ let myNumber = 1;
 let gameStarted = false;
 let soloMode = false;
 let soloShootTimer = 1.5;
+let currentMap = '1';
 
 setStatus('Đang kết nối server...');
 socket.onAny((event, ...args) => {
@@ -111,9 +112,10 @@ $('btnSolo').addEventListener('click', () => {
     myNumber = 1;
     $('lobby-menu').style.display = 'none';
     const user = getUserData();
+    currentMap = user.map || '1';
     init3DGame({
         mode: 'pvp',
-        map: user.map,
+        map: currentMap,
         solo: true,
         players: [
             { number: 1, name: user.name, ship: user.ship },
@@ -125,6 +127,7 @@ $('btnSolo').addEventListener('click', () => {
 socket.on('gameStart', (data) => {
     if (gameStarted) return;
     gameStarted = true;
+    currentMap = data.map || currentMap;
     setStatus('遊戲開始！ (Trò chơi bắt đầu!)');
     setTimeout(() => {
         $('lobby-menu').style.display = 'none';
@@ -143,14 +146,20 @@ socket.on('errorMsg', (msg) => {
 // 2. THÔNG SỐ GAME
 // ==========================================
 const SHIPS = {
-    '1': { color: 0x00ffcc, speed: 14, hp: 100, cooldown: 0.25 }, // Phantom: cân bằng
-    '2': { color: 0xffee00, speed: 20, hp: 70,  cooldown: 0.20 }, // Lightning: nhanh, mỏng
-    '3': { color: 0x66aaff, speed: 10, hp: 150, cooldown: 0.35 }, // Titan: chậm, trâu
+    '1': { color: 0x00ffcc, speed: 14, hp: 100, cooldown: 0.25 },
+    '2': { color: 0xffee00, speed: 20, hp: 70, cooldown: 0.20 },
+    '3': { color: 0x66aaff, speed: 10, hp: 150, cooldown: 0.35 },
 };
 const ARENA = 14;
 const OPP_COLOR = 0xff3366;
 const START_X = [-6, -2, 2, 6];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function getMapDifficulty() {
+    if (currentMap === '2') return 1.35;
+    if (currentMap === '3') return 1.7;
+    return 1;
+}
 
 let mode = 'coop';
 let scene, camera, renderer, starField;
@@ -160,22 +169,21 @@ let gameTime = 0, lastFrame = 0, lastSend = 0, shootCd = 0;
 let hudEl, msgEl, bossHealthWrap, shipHealthBar;
 let boss = null;
 let bossShots = [];
+let rockShots = [];
 
 const oppTarget = { x: 0, z: -12 };
 let oppRotationTarget = 0;
-const bullets = [];          // PvP: đạn tự mô phỏng ở máy
-const decorRocks = [];       // PvP map 2: thiên thạch trang trí
+const bullets = [];
+const decorRocks = [];
 const keys = {};
 
-// Co-op: mọi thứ lấy từ server
-const teamShips = {};        // { s���: {mesh, tx, tz} }
-const playersInfo = {};      // { số: {name, hp, max, alive} }
-const astMeshes = new Map(); // id -> {mesh, tx, tz, spin}
-const bulMeshes = new Map(); // id -> {mesh, tx, tz}
+const teamShips = {};
+const playersInfo = {};
+const astMeshes = new Map();
+const bulMeshes = new Map();
 const explosions = [];
 let coopStats = { time: 0, score: 0, level: 1, shield: 5, mul: 1 };
 
-// Tốc độ PvP tăng dần theo thời gian (tối đa x2)
 const speedMul = () => Math.min(2, 1 + gameTime * 0.01);
 
 const bulletGeo = new THREE.SphereGeometry(0.3, 8, 8);
@@ -185,12 +193,57 @@ const bulletMatTeam = new THREE.MeshBasicMaterial({ color: 0x66ffee });
 const rockGeo = new THREE.IcosahedronGeometry(1, 1);
 const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a7f73, roughness: 1, flatShading: true });
 const boomGeo = new THREE.SphereGeometry(1, 12, 12);
+const rockShotMat = new THREE.MeshBasicMaterial({ color: 0xffa855 });
+
+const audioContext = window.AudioContext || window.webkitAudioContext ? new (window.AudioContext || window.webkitAudioContext)() : null;
+
+function playTone({ freq = 440, duration = 0.08, type = 'square', volume = 0.04, slide = 0 } = {}) {
+    if (!audioContext) return;
+    const ctx = audioContext;
+    if (ctx.state === 'suspended') ctx.resume();
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, ctx.currentTime);
+    if (slide) {
+        osc.frequency.linearRampToValueAtTime(freq + slide, ctx.currentTime + duration);
+    }
+
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(volume, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + duration + 0.02);
+}
+
+function playUiTone() { playTone({ freq: 520, duration: 0.04, type: 'square', volume: 0.018, slide: 80 }); }
+function playShootTone() { playTone({ freq: 700, duration: 0.05, type: 'square', volume: 0.025, slide: 120 }); }
+function playHitTone() { playTone({ freq: 180, duration: 0.08, type: 'triangle', volume: 0.03, slide: -80 }); }
+function playBossTone() { playTone({ freq: 120, duration: 0.12, type: 'sawtooth', volume: 0.04, slide: -50 }); }
+
+function attachUiSoundHandlers() {
+    document.addEventListener('click', (event) => {
+        const target = event.target;
+        if (target.closest('button, select, input')) playUiTone();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.target && (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT' || event.target.tagName === 'TEXTAREA')) return;
+        const allowed = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD', 'KeyW', 'KeyS'];
+        if (allowed.includes(event.code)) playUiTone();
+    });
+}
+attachUiSoundHandlers();
 
 // ==========================================
 // 3. KHỞI TẠO ĐỒ HỌA 3D
 // ==========================================
 function init3DGame(data) {
     mode = data.mode;
+    currentMap = data.map || currentMap;
     soloMode = !!data.solo;
     soloShootTimer = 1.5;
     const me = data.players.find((p) => p.number === myNumber) || data.players[0];
@@ -203,7 +256,7 @@ function init3DGame(data) {
     });
 
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(data.map === '2' ? 0x14100a : 0x050515);
+    scene.background = new THREE.Color(currentMap === '2' ? 0x14100a : 0x050515);
 
     camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
     camera.position.set(0, 42, 24);
@@ -230,7 +283,7 @@ function init3DGame(data) {
         oppShip = makeShipMesh(OPP_COLOR, 1);
         oppShip.position.set(0, 0, -12);
         scene.add(oppShip);
-        if (data.map === '1' || data.map === '2') createDecorRocks(data.map === '2' ? 20 : 12);
+        if (currentMap === '1' || currentMap === '2') createDecorRocks(currentMap === '2' ? 18 : 12);
     } else {
         myShip = makeShipMesh(myStats.color, -1);
         myShip.position.set(START_X[myNumber - 1] ?? 0, 0, 12);
@@ -256,7 +309,6 @@ function init3DGame(data) {
     animate();
 }
 
-// forward = -1: mũi hướng lên màn hình (-Z); forward = +1: mũi hướng xuống (+Z)
 function makeShipMesh(color, forward) {
     const geom = new THREE.ConeGeometry(1, 3, 4);
     geom.rotateX(forward * Math.PI / 2);
@@ -283,6 +335,8 @@ function createDecorRocks(count = 12) {
         scene.remove(rock);
     }
     decorRocks.length = 0;
+    rockShots.forEach((shot) => scene.remove(shot.mesh));
+    rockShots = [];
 
     for (let i = 0; i < count; i++) {
         const rock = new THREE.Mesh(rockGeo, rockMat);
@@ -297,6 +351,8 @@ function createDecorRocks(count = 12) {
             phase: Math.random() * Math.PI * 2,
             spread: 2.2 + Math.random() * 2.3,
             speed: 0.7 + Math.random() * 1.5,
+            fireTimer: 1.5 + Math.random() * 2.2,
+            drift: Math.random() * Math.PI * 2,
         };
         scene.add(rock);
         decorRocks.push(rock);
@@ -312,19 +368,17 @@ function explode(x, z, size) {
     explosions.push({ mesh, life: 0, size });
 }
 
-// ==========================================
-// 4. HUD + ĐIỀU KHIỂN
-// ==========================================
 function createHUD() {
     hudEl = document.createElement('div');
     hudEl.style.cssText = 'position:fixed;top:10px;left:10px;color:#fff;font:18px Arial;text-shadow:0 0 6px #000;z-index:50;line-height:1.6;';
     document.body.appendChild(hudEl);
 
     shipHealthBar = document.createElement('div');
+    shipHealthBar.id = 'shipHealthBar';
     shipHealthBar.style.cssText = 'position:fixed;right:22px;top:20px;width:220px;z-index:70;display:none;';
     shipHealthBar.innerHTML = `
         <div style="position:relative;height:34px;border-radius:18px;background:rgba(15,18,25,.68);border:1px solid rgba(255,255,255,.18);overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.28);">
-            <div style="position:absolute;inset:0;clip-path:polygon(0% 50%, 18% 18%, 68% 18%, 100% 50%, 68% 82%, 18% 82%);background:linear-gradient(90deg, rgba(87,234,255,.3), rgba(34,179,255,.12));"></div>
+            <div style="position:absolute;inset:0;background:linear-gradient(90deg, rgba(87,234,255,.3), rgba(34,179,255,.12));clip-path:polygon(0% 50%, 18% 18%, 68% 18%, 100% 50%, 68% 82%, 18% 82%);"></div>
             <div id="shipHpFill" style="position:absolute;left:0;top:0;height:100%;width:100%;background:linear-gradient(90deg,#48f5c3,#56deff,#aaf9a6);clip-path:polygon(0% 50%, 18% 18%, 68% 18%, 100% 50%, 68% 82%, 18% 82%);transition:width .14s ease;"></div>
             <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#04141a;font:700 12px Arial;letter-spacing:.12em;text-shadow:0 0 4px rgba(255,255,255,.75);">HP <span id="shipHpText">100</span></div>
         </div>
@@ -336,15 +390,16 @@ function createHUD() {
     document.body.appendChild(msgEl);
 
     bossHealthWrap = document.createElement('div');
-    bossHealthWrap.style.cssText = 'position:fixed;left:50%;top:18px;transform:translateX(-50%);width:min(420px,62vw);padding:10px 12px;border-radius:16px;background:rgba(15,15,20,.8);border:1px solid rgba(255,255,255,.24);box-shadow:0 6px 24px rgba(0,0,0,.3);display:none;z-index:70;color:#fff;font:600 14px Arial;';
+    bossHealthWrap.id = 'bossHealthWrap';
+    bossHealthWrap.style.cssText = 'position:fixed;left:50%;top:18px;transform:translateX(-50%);width:min(420px,62vw);padding:12px 14px;border-radius:18px;background:rgba(15,20,32,.76);border:2px solid rgba(255,210,120,.9);box-shadow:0 0 0 2px rgba(255,132,0,.4),0 12px 30px rgba(0,0,0,.35);display:none;z-index:70;color:#fff;font:600 14px Arial;';
     bossHealthWrap.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;letter-spacing:.12em;text-transform:uppercase;">
             <span>Final Boss</span>
             <span id="bossHpText">0 / 0</span>
         </div>
-        <div style="height:16px;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden;position:relative;">
-            <div style="position:absolute;inset:0;clip-path:polygon(0% 50%, 8% 18%, 92% 18%, 100% 50%, 92% 82%, 8% 82%);background:rgba(255,255,255,.08);"></div>
-            <div id="bossHpFill" style="height:100%;width:0%;background:linear-gradient(90deg,#ff5b5b,#ffbf69);border-radius:999px;transition:width .12s ease;clip-path:polygon(0% 50%, 8% 18%, 92% 18%, 100% 50%, 92% 82%, 8% 82%);"></div>
+        <div style="height:18px;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden;position:relative;border:1px solid rgba(255,255,255,.25);box-shadow:inset 0 0 10px rgba(255,255,255,.08);">
+            <div style="position:absolute;inset:0;background:linear-gradient(90deg, rgba(255,255,255,.18), rgba(255,255,255,.02));"></div>
+            <div id="bossHpFill" style="height:100%;width:0%;background:linear-gradient(90deg,#ff4d52,#ffbf60,#ffe38c);border-radius:999px;transition:width .12s ease;box-shadow:0 0 12px rgba(255,170,80,.8);"></div>
         </div>
     `;
     document.body.appendChild(bossHealthWrap);
@@ -386,7 +441,7 @@ function updateHUD() {
         `${p.alive ? '🟢' : '💀'} ${esc(p.name)}${Number(n) === myNumber ? ' (bạn)' : ''} - Máu: ${Math.max(0, p.hp)}/${p.max}`);
     hudEl.innerHTML =
         `🏆 Điểm đội: ${coopStats.score} &nbsp;|&nbsp; 🌠 Cấp ${coopStats.level} &nbsp;|&nbsp; ⏱️ ${coopStats.time}s &nbsp;|&nbsp; ⚡ x${coopStats.mul.toFixed(2)}` +
-        `<br>���️ 護盾 (Lá chắn): ${'🟦'.repeat(Math.max(0, coopStats.shield))} &nbsp;|&nbsp; 房號 ${currentRoomCode}` +
+        `<br>🛡️ 護盾 (Lá chắn): ${'🟦'.repeat(Math.max(0, coopStats.shield))} &nbsp;|&nbsp; 房號 ${currentRoomCode}` +
         `<br>${lines.join('<br>')}` +
         (alive ? '' : '<br>💥 你已陣亡，觀戰中 (Bạn đã hạ gục, đang xem đồng đội)');
 }
@@ -407,14 +462,33 @@ function setupInput() {
     window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 }
 
-// ==========================================
-// 5. VÒNG LẶP GAME
-// ==========================================
 function spawnBullet(x, z, vx, vz, mine) {
     const mesh = new THREE.Mesh(bulletGeo, mine ? bulletMatMine : bulletMatOpp);
     mesh.position.set(x, 0, z);
     scene.add(mesh);
     bullets.push({ mesh, vx, vz, mine });
+}
+
+function spawnRockShot(rock) {
+    const shot = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), rockShotMat);
+    shot.position.copy(rock.position);
+    scene.add(shot);
+
+    const target = Math.hypot(myShip.position.x - rock.position.x, myShip.position.z - rock.position.z)
+        < Math.hypot(oppShip.position.x - rock.position.x, oppShip.position.z - rock.position.z)
+        ? myShip.position
+        : oppShip.position;
+
+    const dx = target.x - rock.position.x;
+    const dz = target.z - rock.position.z;
+    const dist = Math.hypot(dx, dz) || 1;
+
+    rockShots.push({
+        mesh: shot,
+        vx: (dx / dist) * (7 + getMapDifficulty() * 3),
+        vz: (dz / dist) * (7 + getMapDifficulty() * 3),
+        life: 2.5,
+    });
 }
 
 function spawnBossShot() {
@@ -432,7 +506,7 @@ function spawnBossShot() {
         }
     }
 
-    const shotGeo = new THREE.SphereGeometry(0.45, 10, 10);
+    const shotGeo = new THREE.SphereGeometry(0.55, 10, 10);
     const shotMat = new THREE.MeshBasicMaterial({ color: 0xff6a6a });
     const mesh = new THREE.Mesh(shotGeo, shotMat);
     mesh.position.copy(boss.mesh.position);
@@ -444,15 +518,16 @@ function spawnBossShot() {
 
     bossShots.push({
         mesh,
-        vx: (dx / dist) * 12,
-        vz: (dz / dist) * 12,
+        vx: (dx / dist) * (10 + getMapDifficulty() * 3),
+        vz: (dz / dist) * (10 + getMapDifficulty() * 3),
     });
 }
 
 function spawnBoss() {
     if (!scene || mode !== 'coop' || boss) return;
 
-    const bossGeo = new THREE.IcosahedronGeometry(2.8, 1);
+    const mapMul = getMapDifficulty();
+    const bossGeo = new THREE.IcosahedronGeometry(2.9, 1);
     const bossMat = new THREE.MeshStandardMaterial({
         color: 0xff4d4d,
         emissive: 0x440000,
@@ -466,10 +541,12 @@ function spawnBoss() {
 
     boss = {
         mesh,
-        hp: 500,
-        maxHp: 500,
-        fireTimer: 1.1,
+        hp: 700 * mapMul,
+        maxHp: 700 * mapMul,
+        fireTimer: 0.75,
         drift: 0,
+        damage: 15 + mapMul * 5,
+        speed: 1.2 + mapMul * 0.4,
     };
     updateBossBar();
 }
@@ -496,7 +573,6 @@ function update(dt, now) {
 
     if (mode === 'coop' && !boss && coopStats.time >= 28) spawnBoss();
 
-    // --- Di chuyển + bắn (tàu của mình) ---
     if (alive) {
         const moveMul = mode === 'pvp' ? speedMul() : 1;
         let dx = 0, dz = 0;
@@ -513,6 +589,7 @@ function update(dt, now) {
         shootCd -= dt;
         if (keys.Space && shootCd <= 0) {
             shootCd = myStats.cooldown;
+            playShootTone();
             if (mode === 'pvp') {
                 const b = { x: myShip.position.x, z: myShip.position.z - 1.8, vx: 0, vz: -30 * speedMul() };
                 spawnBullet(b.x, b.z, b.vx, b.vz, true);
@@ -525,7 +602,6 @@ function update(dt, now) {
 
     if (mode === 'pvp') updatePvp(dt); else updateCoop(dt);
 
-    // --- Nền sao cuộn ---
     const starSpeed = mode === 'coop' ? coopStats.mul : speedMul();
     const arr = starField.geometry.attributes.position.array;
     for (let i = 2; i < arr.length; i += 3) {
@@ -534,7 +610,6 @@ function update(dt, now) {
     }
     starField.geometry.attributes.position.needsUpdate = true;
 
-    // --- Hiệu ứng nổ ---
     for (let i = explosions.length - 1; i >= 0; i--) {
         const e = explosions[i];
         e.life += dt;
@@ -548,7 +623,6 @@ function update(dt, now) {
         }
     }
 
-    // --- Gửi vị trí 20 lần/giây ---
     if (!soloMode && now - lastSend > 50) {
         lastSend = now;
         socket.emit('state', {
@@ -564,30 +638,70 @@ function update(dt, now) {
 
 function updatePvp(dt) {
     const k = Math.min(1, dt * 12);
+    const diff = getMapDifficulty();
+
     if (soloMode) {
         oppTarget.x = Math.sin(gameTime * 0.8) * 8;
         oppTarget.z = -12;
         soloShootTimer -= dt;
         if (soloShootTimer <= 0) {
-            soloShootTimer = 1.2;
+            soloShootTimer = Math.max(0.7, 1.2 / diff);
             spawnBullet(oppShip.position.x, oppShip.position.z + 1.8, 0, 24 * speedMul(), false);
+            playHitTone();
         }
     }
+
     oppShip.position.x += (oppTarget.x - oppShip.position.x) * k;
     oppShip.position.z += (oppTarget.z - oppShip.position.z) * k;
     oppShip.rotation.z += (oppRotationTarget - oppShip.rotation.z) * k;
 
     for (const rock of decorRocks) {
-        const { baseX, baseZ, phase, spread, speed } = rock.userData;
-        rock.position.x = baseX + Math.sin(gameTime * speed + phase) * spread;
-        rock.position.z = baseZ + Math.cos(gameTime * (speed * 0.8) + phase) * (spread * 0.75);
+        const { baseX, baseZ, phase, spread, speed, drift } = rock.userData;
+        const centerPull = 0.016 * diff * 60 * dt;
+        rock.position.x += (0 - rock.position.x) * centerPull;
+        rock.position.z += (-2 - rock.position.z) * centerPull * 0.8;
+        rock.position.x = baseX + Math.sin(gameTime * speed + phase + drift) * spread + Math.sin(gameTime * 0.8 + drift) * 1.4;
+        rock.position.z = baseZ + Math.cos(gameTime * (speed * 0.8) + phase) * (spread * 0.75) - 2;
         rock.rotation.x += dt * (0.4 + speed * 0.2);
         rock.rotation.y += dt * (0.5 + speed * 0.25);
 
+        rock.userData.fireTimer -= dt;
+        if (rock.userData.fireTimer <= 0) {
+            spawnRockShot(rock);
+            rock.userData.fireTimer = Math.max(1.2, 2.8 / diff);
+        }
+
         const shipDistMine = Math.hypot(myShip.position.x - rock.position.x, myShip.position.z - rock.position.z);
-        if (shipDistMine < 2.2) myHp = Math.max(0, myHp - 8 * dt);
+        if (shipDistMine < 2.2) myHp = Math.max(0, myHp - 8 * dt * diff);
         const shipDistOpp = Math.hypot(oppShip.position.x - rock.position.x, oppShip.position.z - rock.position.z);
-        if (shipDistOpp < 2.2) oppHp = Math.max(0, oppHp - 8 * dt);
+        if (shipDistOpp < 2.2) oppHp = Math.max(0, oppHp - 8 * dt * diff);
+    }
+
+    for (let i = rockShots.length - 1; i >= 0; i--) {
+        const shot = rockShots[i];
+        shot.mesh.position.x += shot.vx * dt;
+        shot.mesh.position.z += shot.vz * dt;
+        shot.life -= dt;
+
+        const myDist = Math.hypot(shot.mesh.position.x - myShip.position.x, shot.mesh.position.z - myShip.position.z);
+        const oppDist = Math.hypot(shot.mesh.position.x - oppShip.position.x, shot.mesh.position.z - oppShip.position.z);
+        if (myDist < 1.5) {
+            myHp = Math.max(0, myHp - 10 * diff);
+            playHitTone();
+            scene.remove(shot.mesh);
+            rockShots.splice(i, 1);
+            continue;
+        }
+        if (oppDist < 1.5) {
+            oppHp = Math.max(0, oppHp - 10 * diff);
+            scene.remove(shot.mesh);
+            rockShots.splice(i, 1);
+            continue;
+        }
+        if (shot.life <= 0 || Math.abs(shot.mesh.position.x) > 30 || Math.abs(shot.mesh.position.z) > 30) {
+            scene.remove(shot.mesh);
+            rockShots.splice(i, 1);
+        }
     }
 
     for (let i = bullets.length - 1; i >= 0; i--) {
@@ -610,8 +724,9 @@ function updatePvp(dt) {
             const dx = b.mesh.position.x - oppShip.position.x;
             const dz = b.mesh.position.z - oppShip.position.z;
             if (dx * dx + dz * dz < 2.25) {
-                oppHp -= 10;
+                oppHp -= 10 * diff;
                 remove = true;
+                playHitTone();
                 if (oppHp <= 0 && !gameEnded) {
                     gameEnded = true;
                     oppShip.visible = false;
@@ -620,13 +735,13 @@ function updatePvp(dt) {
             }
         }
 
-        // Chỉ máy của người bị bắn mới tính sát thương (tránh tính 2 lần)
         if (!b.mine && alive) {
             const ex = b.mesh.position.x - myShip.position.x;
             const ez = b.mesh.position.z - myShip.position.z;
             if (ex * ex + ez * ez < 2.25) {
-                myHp -= 10;
+                myHp -= 10 * diff;
                 remove = true;
+                playHitTone();
                 if (myHp <= 0) die();
             }
         }
@@ -660,14 +775,15 @@ function updateCoop(dt) {
 
     if (boss) {
         boss.drift += dt;
-        boss.mesh.position.x = Math.sin(boss.drift * 1.2) * 8;
-        boss.mesh.position.z = -12 + Math.cos(boss.drift * 1.7) * 2;
+        boss.mesh.position.x = Math.sin(boss.drift * boss.speed) * 7.2;
+        boss.mesh.position.z = -12 + Math.cos(boss.drift * (boss.speed * 1.5)) * 2.5;
         boss.mesh.rotation.x += dt * 2.4;
         boss.mesh.rotation.y += dt * 2.8;
         boss.fireTimer -= dt;
         if (boss.fireTimer <= 0) {
             spawnBossShot();
-            boss.fireTimer = 1.15;
+            playBossTone();
+            boss.fireTimer = Math.max(0.4, 0.85 / getMapDifficulty());
         }
 
         for (let i = bossShots.length - 1; i >= 0; i--) {
@@ -677,7 +793,8 @@ function updateCoop(dt) {
 
             const hitDist = Math.hypot(shot.mesh.position.x - myShip.position.x, shot.mesh.position.z - myShip.position.z);
             if (hitDist < 1.8) {
-                myHp = Math.max(0, myHp - 12);
+                myHp = Math.max(0, myHp - boss.damage);
+                playHitTone();
                 if (myHp <= 0) die();
                 scene.remove(shot.mesh);
                 bossShots.splice(i, 1);
@@ -693,8 +810,9 @@ function updateCoop(dt) {
         const bulletEntries = [...bulMeshes.entries()];
         for (const [id, bullet] of bulletEntries) {
             if (!bullet || !bullet.mesh) continue;
-            if (bullet.mesh.position.distanceTo(boss.mesh.position) < 3.1) {
-                boss.hp -= 25;
+            if (bullet.mesh.position.distanceTo(boss.mesh.position) < 3.3) {
+                boss.hp -= 26;
+                playHitTone();
                 scene.remove(bullet.mesh);
                 bulMeshes.delete(id);
                 if (boss.hp <= 0) {
@@ -723,15 +841,11 @@ function onWindowResize() {
     renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
-// ==========================================
-// 6. NHẬN DỮ LIỆU - CO-OP (từ server)
-// ==========================================
 socket.on('snapshot', (s) => {
     if (!scene || mode !== 'coop') return;
 
     coopStats = { time: s.t, score: s.sc, level: s.lv, shield: s.sh, mul: s.m };
 
-    // Người chơi: [số, x, z, hp, còn sống]
     for (const [n, x, z, hp, al] of s.p) {
         const info = playersInfo[n];
         if (info) { info.hp = hp; info.alive = !!al; }
@@ -749,7 +863,6 @@ socket.on('snapshot', (s) => {
         }
     }
 
-    // Thiên thạch: [id, x, z, vx, vz, bán kính]
     const seenA = new Set();
     for (const [id, x, z, vx, vz, r] of s.a) {
         seenA.add(id);
@@ -770,14 +883,12 @@ socket.on('snapshot', (s) => {
     }
     for (const [id, o] of astMeshes) {
         if (!seenA.has(id)) {
-            // Biến mất trước vạch cuối = bị bắn nổ hoặc đâm tàu => có hiệu ứng nổ
             if (o.mesh.position.z < 14) explode(o.mesh.position.x, o.mesh.position.z, o.mesh.scale.x * 1.4);
             scene.remove(o.mesh);
             astMeshes.delete(id);
         }
     }
 
-    // Đạn: [id, x, z]
     const seenB = new Set();
     for (const [id, x, z] of s.b) {
         seenB.add(id);
@@ -816,10 +927,6 @@ socket.on('playerLeft', ({ number }) => {
     }
 });
 
-// ==========================================
-// 7. NHẬN DỮ LIỆU - PVP
-// (đảo dấu x, z để mỗi người luôn thấy mình ở dưới màn hình)
-// ==========================================
 socket.on('opponentState', (d) => {
     if (soloMode || !oppShip) return;
     oppTarget.x = -d.x;
