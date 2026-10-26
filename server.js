@@ -26,26 +26,35 @@ app.get('/health', (req, res) => res.send('ok'));
 // ==========================================
 const MAX_PLAYERS = { coop: 4, pvp: 2 };
 const SHIP_HP = { '1': 100, '2': 70, '3': 150 };
-const SHIP_CD = { '1': 0.25, '2': 0.20, '3': 0.35 }; // giây giữa 2 phát bắn
+const SHIP_CD = { '1': 0.25, '2': 0.20, '3': 0.35 };
+const BOT_DIFFICULTY = 2; // 1..3: dễ - vừa - khó
+const BOT_PROFILE = {
+  1: { reactionMs: 260, aimError: 0.85, fireBias: 1.15, stray: 0.9, chaseBias: 0.8 },
+  2: { reactionMs: 170, aimError: 0.45, fireBias: 1, stray: 0.65, chaseBias: 1 },
+  3: { reactionMs: 100, aimError: 0.22, fireBias: 0.8, stray: 0.45, chaseBias: 1.18 },
+};
 const COOP = {
-  ARENA: 14,        // tàu và thiên thạch nằm trong -14..14
-  SPAWN_Z: -36,     // thiên thạch xuất hiện ở đây (phía trên)
-  END_Z: 15,        // thiên thạch vượt qua mốc này => trừ lá chắn
-  SHIELD: 5,        // số lá chắn chung của cả đội
+  ARENA: 14,
+  SPAWN_Z: -36,
+  END_Z: 15,
+  SHIELD: 5,
   BULLET_SPEED: 36,
-  TICK_MS: 33,      // ~30 lần/giây
-  HIT_DAMAGE: 34,   // máu mất khi thiên thạch đâm trúng tàu
+  TICK_MS: 33,
+  HIT_DAMAGE: 34,
 };
 
 const rooms = {};
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const cleanName = (n) => String(n || 'Player').trim().slice(0, 12) || 'Player';
 const cleanShip = (s) => (['1', '2', '3'].includes(String(s)) ? String(s) : '1');
+const dist2 = (ax, az, bx, bz) => (ax - bx) ** 2 + (az - bz) ** 2;
+const safeMapX = 13.2;
+const safeMapZ = 13.2;
 
 function genCode() {
   let code;
   do {
-    code = String(Math.floor(1000 + Math.random() * 9000)); // 4 chữ số
+    code = String(Math.floor(1000 + Math.random() * 9000));
   } while (rooms[code]);
   return code;
 }
@@ -62,6 +71,31 @@ function newPlayer(id, number, ud) {
   return {
     id, number, name: cleanName(ud.name), ship,
     x: 0, z: 12, hp: SHIP_HP[ship], alive: true, lastShot: 0, left: false,
+    vx: 0, vz: 0, rotation: 0,
+  };
+}
+
+function createBotPlayer(number = 2) {
+  const ship = '1';
+  return {
+    id: `BOT_${number}`,
+    number,
+    name: 'BOT',
+    ship,
+    x: 0,
+    z: -12,
+    hp: SHIP_HP[ship],
+    alive: true,
+    left: false,
+    vx: 0,
+    vz: 0,
+    rotation: 0,
+    lastShot: 0,
+    bot: true,
+    aimBias: 0,
+    state: 'HUNT',
+    dodgeDir: 1,
+    strafeTimer: 0,
   };
 }
 
@@ -82,6 +116,261 @@ function broadcastLobby(code) {
   });
 }
 
+function roomHasBot(room) {
+  return !!(room && room.bot && room.bot.alive);
+}
+
+function ensureBot(room) {
+  if (!room || room.mode !== 'pvp' || !room.botEnabled || room.bot) return;
+  room.bot = createBotPlayer(2);
+  room.players.push(room.bot);
+}
+
+function stopPvpBotLoop(code) {
+  const room = rooms[code];
+  if (!room || !room.botLoop) return;
+  clearInterval(room.botLoop);
+  room.botLoop = null;
+}
+
+function startPvpBotLoop(code) {
+  const room = rooms[code];
+  if (!room || room.mode !== 'pvp' || !room.botEnabled || room.botLoop) return;
+  ensureBot(room);
+  room.projectiles = room.projectiles || [];
+  room.botLoop = setInterval(() => tickPvPBot(code), 33);
+}
+
+function getBotProfile() {
+  return BOT_PROFILE[BOT_DIFFICULTY] || BOT_PROFILE[2];
+}
+
+function predictTargetPosition(target, bulletSpeed, seconds) {
+  const tx = Number(target.x) || 0;
+  const tz = Number(target.z) || 0;
+  const vx = Number(target.vx) || 0;
+  const vz = Number(target.vz) || 0;
+  return {
+    x: tx + vx * seconds,
+    z: tz + vz * seconds,
+    dx: vx,
+    dz: vz,
+  };
+}
+
+function pointInsideThreat(x, z, obj) {
+  const pad = (obj.radius || 0.8) + 0.45;
+  return dist2(x, z, obj.x, obj.z) <= pad * pad;
+}
+
+function isSafeMove(bot, tx, tz, projectiles, asteroids) {
+  const edgePenalty = Math.max(0, Math.abs(tx) - safeMapX) * 25 + Math.max(0, Math.abs(tz) - safeMapZ) * 25;
+  if (edgePenalty > 0) return { safe: false, score: -9999 };
+
+  let score = 0;
+  const lookAhead = 1.4;
+
+  for (const projectile of projectiles || []) {
+    const px = Number(projectile.x) || 0;
+    const pz = Number(projectile.z) || 0;
+    const pvx = Number(projectile.vx) || 0;
+    const pvz = Number(projectile.vz) || 0;
+    const futureX = px + pvx * lookAhead;
+    const futureZ = pz + pvz * lookAhead;
+    const d = Math.hypot(futureX - tx, futureZ - tz);
+    if (d < 2.1) score -= 80;
+    if (Math.hypot(px - tx, pz - tz) < 2.6) score -= 20;
+  }
+
+  for (const asteroid of asteroids || []) {
+    const ax = Number(asteroid.x) || 0;
+    const az = Number(asteroid.z) || 0;
+    const avx = Number(asteroid.vx) || 0;
+    const avz = Number(asteroid.vz) || 0;
+    const futureX = ax + avx * lookAhead;
+    const futureZ = az + avz * lookAhead;
+    const d = Math.hypot(futureX - tx, futureZ - tz);
+    if (d < 2.2 + (asteroid.r || 1)) score -= 120;
+  }
+
+  if (Math.abs(tx) > 12.3 || Math.abs(tz) > 12.3) score -= 50;
+  if (Math.abs(tx) < 1.8 && Math.abs(tz) < 1.8) score -= 20;
+  return { safe: score > -40, score: score + (Math.abs(tx) * 0.5) + (Math.abs(tz) * 0.3) };
+}
+
+function chooseBotMove(bot, opponent, projectiles, asteroids) {
+  const profile = getBotProfile();
+  const angleStep = 25;
+  const candidateMoves = [];
+  const baseSpeed = 2.7 + profile.chaseBias * 0.9;
+
+  for (let a = -180; a <= 180; a += angleStep) {
+    const rad = (a * Math.PI) / 180;
+    const tx = clamp(bot.x + Math.cos(rad) * baseSpeed * 0.9, -COOP.ARENA, COOP.ARENA);
+    const tz = clamp(bot.z + Math.sin(rad) * baseSpeed * 0.9, -COOP.ARENA, COOP.ARENA);
+    const result = isSafeMove(bot, tx, tz, projectiles, asteroids);
+    candidateMoves.push({ tx, tz, score: result.score, safe: result.safe });
+  }
+
+  const sorted = candidateMoves.sort((a, b) => b.score - a.score);
+  const best = sorted.find((c) => c.safe) || sorted[0];
+  if (!best) {
+    return { x: bot.x, z: bot.z };
+  }
+
+  return { x: best.tx, z: best.tz };
+}
+
+function botPredictiveShot(bot, opponent, room, profile) {
+  const bulletSpeed = 30;
+  const travelTime = Math.max(0.35, Math.hypot(opponent.x - bot.x, opponent.z - bot.z) / bulletSpeed);
+  const predicted = predictTargetPosition(opponent, bulletSpeed, travelTime);
+  const aimJitter = (Math.random() - 0.5) * profile.aimError * 1.8;
+  const targetX = predicted.x + aimJitter;
+  const targetZ = predicted.z + aimJitter * 0.6;
+  return {
+    x: bot.x,
+    z: bot.z + 1.8,
+    vx: 0,
+    vz: 30 * (profile.fireBias || 1),
+    targetX,
+    targetZ,
+  };
+}
+
+function tickPvPBot(code) {
+  const room = rooms[code];
+  if (!room || !room.bot || room.over) return;
+  const bot = room.bot;
+  const human = room.players.find((p) => !p.bot && !p.left);
+  if (!human) return;
+
+  const profile = getBotProfile();
+  const projectiles = room.projectiles || [];
+  const asteroids = room.asteroids || [];
+  const humanState = room.latestHumanState || { x: human.x, z: human.z, vx: 0, vz: 0, hp: human.hp };
+  const currentDist = Math.hypot(humanState.x - bot.x, humanState.z - bot.z);
+  const lowHp = bot.hp <= 35;
+  const oppLowHp = humanState.hp <= 35;
+
+  let danger = false;
+  for (const projectile of projectiles) {
+    const futureX = (projectile.x || 0) + (projectile.vx || 0) * 1.6;
+    const futureZ = (projectile.z || 0) + (projectile.vz || 0) * 1.6;
+    const d = Math.hypot(futureX - bot.x, futureZ - bot.z);
+    if (d < 2.7) {
+      danger = true;
+      break;
+    }
+  }
+
+  for (const a of asteroids) {
+    const futureX = (a.x || 0) + (a.vx || 0) * 1.4;
+    const futureZ = (a.z || 0) + (a.vz || 0) * 1.4;
+    const d = Math.hypot(futureX - bot.x, futureZ - bot.z);
+    if (d < (a.r || 1.2) + 1.4) {
+      danger = true;
+      break;
+    }
+  }
+
+  let move = { x: bot.x, z: bot.z };
+  let state = 'HUNT';
+
+  if (danger || lowHp) {
+    state = 'EVADE';
+    move = chooseBotMove(bot, humanState, projectiles, asteroids);
+    bot.x = clamp(move.x, -COOP.ARENA, COOP.ARENA);
+    bot.z = clamp(move.z, -COOP.ARENA, COOP.ARENA);
+    bot.state = state;
+  } else {
+    const desiredRange = oppLowHp ? 6.2 : 4.8;
+    let targetX = humanState.x;
+    let targetZ = humanState.z;
+
+    if (currentDist > desiredRange + 0.8) {
+      state = 'APPROACH';
+      const nx = humanState.x - bot.x;
+      const nz = humanState.z - bot.z;
+      const m = Math.hypot(nx, nz) || 1;
+      targetX = bot.x + (nx / m) * (2.0 + profile.chaseBias * 0.8);
+      targetZ = bot.z + (nz / m) * (2.0 + profile.chaseBias * 0.8);
+    } else if (currentDist < desiredRange - 1.0) {
+      state = 'RETREAT';
+      const nx = bot.x - humanState.x;
+      const nz = bot.z - humanState.z;
+      const m = Math.hypot(nx, nz) || 1;
+      targetX = bot.x + (nx / m) * (1.5 + profile.chaseBias * 0.5);
+      targetZ = bot.z + (nz / m) * (1.5 + profile.chaseBias * 0.5);
+    } else {
+      state = 'STRAFE';
+      const side = bot.dodgeDir || 1;
+      const lateral = side * 1.5;
+      const angle = Math.atan2(humanState.z - bot.z, humanState.x - bot.x);
+      targetX = bot.x + Math.cos(angle + Math.PI / 2) * lateral;
+      targetZ = bot.z + Math.sin(angle + Math.PI / 2) * lateral;
+      bot.dodgeDir *= -1;
+    }
+
+    const strafeSafe = isSafeMove(bot, targetX, targetZ, projectiles, asteroids);
+    if (strafeSafe.safe) {
+      move = { x: clamp(targetX, -COOP.ARENA, COOP.ARENA), z: clamp(targetZ, -COOP.ARENA, COOP.ARENA) };
+      bot.x = move.x;
+      bot.z = move.z;
+    } else {
+      move = chooseBotMove(bot, humanState, projectiles, asteroids);
+      bot.x = clamp(move.x, -COOP.ARENA, COOP.ARENA);
+      bot.z = clamp(move.z, -COOP.ARENA, COOP.ARENA);
+    }
+    bot.state = state;
+  }
+
+  bot.vx = bot.x - (bot._lastX ?? bot.x);
+  bot.vz = bot.z - (bot._lastZ ?? bot.z);
+  bot._lastX = bot.x;
+  bot._lastZ = bot.z;
+
+  const now = Date.now();
+  const shotReady = now - bot.lastShot > (SHIP_CD[bot.ship] * 1000) * profile.fireBias;
+  const closeEnough = Math.hypot(humanState.x - bot.x, humanState.z - bot.z) < 16;
+  const canShoot = shotReady && closeEnough && !danger && bot.alive && human.alive;
+
+  if (canShoot) {
+    const fire = botPredictiveShot(bot, humanState, room, profile);
+    const aimX = Number(fire.targetX || humanState.x);
+    const aimZ = Number(fire.targetZ || humanState.z);
+    const aimDelta = Math.hypot(aimX - humanState.x, aimZ - humanState.z);
+    const shouldFire = aimDelta < 2.2 || Math.random() < 0.78;
+
+    if (shouldFire) {
+      const packet = { x: bot.x, z: bot.z + 1.8, vx: 0, vz: 30 };
+      room.projectiles = room.projectiles || [];
+      room.projectiles.push({ x: packet.x, z: packet.z, vx: packet.vx, vz: packet.vz, radius: 0.35, owner: 2, ttl: 2.4, createdAt: now });
+      io.to(code).emit('opponentShoot', packet);
+      bot.lastShot = now;
+    }
+  }
+
+  const opponentState = {
+    x: clamp(bot.x, -COOP.ARENA, COOP.ARENA),
+    z: clamp(bot.z, -COOP.ARENA, COOP.ARENA),
+    rotation: bot.rotation,
+    hp: clamp(bot.hp, 0, SHIP_HP[bot.ship]),
+  };
+
+  io.to(code).emit('opponentState', opponentState);
+}
+
+function publicBotState(room) {
+  if (!room || !room.bot) return null;
+  return {
+    x: room.bot.x,
+    z: room.bot.z,
+    hp: room.bot.hp,
+    rotation: room.bot.rotation,
+  };
+}
+
 // ==========================================
 // LOGIC CO-OP (SERVER TỰ TÍNH)
 // ==========================================
@@ -99,7 +388,6 @@ function startCoop(code) {
     time: 0, score: 0, shield: COOP.SHIELD, nextId: 1,
     spawnTimer: 1.5, asteroids: [], bullets: [], last: Date.now(), timer: null,
   };
-  // Chờ 2.5 giây cho các máy khởi tạo xong đồ họa rồi mới chạy
   setTimeout(() => {
     if (rooms[code] !== room || !room.sim) return;
     room.sim.last = Date.now();
@@ -132,12 +420,11 @@ function tickCoop(code) {
   sim.last = now;
   sim.time += dt;
 
-  const diff = room.map === '2' ? 1.3 : 1;                    // map 2 khó hơn
-  const mul = Math.min(3.5, 1 + sim.time * 0.02) * diff;      // tốc độ tăng dần theo thời gian
+  const diff = room.map === '2' ? 1.3 : 1;
+  const mul = Math.min(3.5, 1 + sim.time * 0.02) * diff;
   const level = 1 + Math.floor(sim.time / 20);
-  const alivePlayers = room.players.filter((p) => p.alive);
+  const alivePlayers = room.players.filter((p) => p.alive && !p.bot);
 
-  // --- Sinh thiên thạch (nhiều người chơi => nhiều thiên thạch hơn) ---
   sim.spawnTimer -= dt;
   if (sim.spawnTimer <= 0) {
     const r = 0.9 + Math.random() * 1.6;
@@ -154,18 +441,15 @@ function tickCoop(code) {
     sim.spawnTimer = Math.max(0.3, 1.3 / mul) / crowd;
   }
 
-  // --- Di chuyển thiên thạch ---
   for (const a of sim.asteroids) {
     a.x += a.vx * dt;
     a.z += a.vz * dt;
     if (a.x > COOP.ARENA + 2 || a.x < -COOP.ARENA - 2) a.vx = -a.vx;
   }
 
-  // --- Di chuyển đạn ---
   for (const b of sim.bullets) b.z -= COOP.BULLET_SPEED * dt;
   sim.bullets = sim.bullets.filter((b) => b.z > COOP.SPAWN_Z - 5);
 
-  // --- Đạn trúng thiên thạch ---
   for (const b of sim.bullets) {
     for (const a of sim.asteroids) {
       if (a.hp <= 0) continue;
@@ -180,7 +464,6 @@ function tickCoop(code) {
   }
   sim.bullets = sim.bullets.filter((b) => !b.dead);
 
-  // --- Thiên thạch đâm trúng tàu ---
   for (const p of alivePlayers) {
     for (const a of sim.asteroids) {
       if (a.hp <= 0) continue;
@@ -193,13 +476,11 @@ function tickCoop(code) {
     }
   }
 
-  // --- Thiên thạch lọt qua => trừ lá chắn chung ---
   for (const a of sim.asteroids) {
     if (a.hp > 0 && a.z > COOP.END_Z) { a.hp = 0; sim.shield -= 1; }
   }
   sim.asteroids = sim.asteroids.filter((a) => a.hp > 0);
 
-  // --- Gửi trạng thái (rút gọn bằng mảng cho nhẹ) ---
   const f = (n) => Math.round(n * 100) / 100;
   io.to(code).emit('snapshot', {
     t: Math.floor(sim.time), sc: sim.score, lv: level, sh: Math.max(0, sim.shield), m: f(mul),
@@ -208,9 +489,8 @@ function tickCoop(code) {
     p: room.players.map((p) => [p.number, f(p.x), f(p.z), p.hp, p.alive ? 1 : 0]),
   });
 
-  // --- Kiểm tra thua ---
   if (sim.shield <= 0) endCoop(code, 'shield');
-  else if (!room.players.some((p) => p.alive)) endCoop(code, 'dead');
+  else if (!room.players.some((p) => p.alive && !p.bot)) endCoop(code, 'dead');
 }
 
 // ==========================================
@@ -219,7 +499,6 @@ function tickCoop(code) {
 io.on('connection', (socket) => {
   console.log('Kết nối:', socket.id);
 
-  // ----- Tạo phòng -----
   socket.on('createRoom', (userData) => {
     if (socket.data.room) return;
     const ud = userData || {};
@@ -233,16 +512,21 @@ io.on('connection', (socket) => {
       started: false,
       over: false,
       sim: null,
+      botEnabled: !!(ud.bot === true || ud.bot === 'true'),
+      projectiles: [],
+      bot: null,
+      latestHumanState: null,
+      botLoop: null,
     };
     rooms[code].players.push(newPlayer(socket.id, 1, ud));
+    if (mode === 'pvp' && rooms[code].botEnabled) ensureBot(rooms[code]);
     socket.join(code);
     socket.data.room = code;
     socket.emit('roomCreated', { roomCode: code, playerNumber: 1, mode });
     broadcastLobby(code);
-    console.log('Tạo phòng', code, mode);
+    console.log('Tạo phòng', code, mode, 'bot=', rooms[code].botEnabled);
   });
 
-  // ----- Vào phòng -----
   socket.on('joinRoom', (data) => {
     if (socket.data.room) return socket.emit('errorMsg', '你已在房間內 (Bạn đang ở trong một phòng)');
     const code = String((data && data.roomCode) || '').trim();
@@ -255,19 +539,20 @@ io.on('connection', (socket) => {
     if (!number) return socket.emit('errorMsg', '房間已滿 (Phòng đã đầy)');
 
     room.players.push(newPlayer(socket.id, number, ud));
+    room.botEnabled = room.botEnabled || !!(ud.bot === true || ud.bot === 'true');
+    if (room.mode === 'pvp' && room.botEnabled) ensureBot(room);
     socket.join(code);
     socket.data.room = code;
     socket.emit('roomJoined', { roomCode: code, playerNumber: number, mode: room.mode });
     broadcastLobby(code);
 
-    // PvP: đủ 2 người thì tự bắt đầu
     if (room.mode === 'pvp' && room.players.length >= 2) {
       room.started = true;
       io.to(code).emit('gameStart', { mode: 'pvp', map: room.map, players: publicPlayers(room) });
+      if (room.botEnabled && room.bot) startPvpBotLoop(code);
     }
   });
 
-  // ----- Chủ phòng bấm Bắt đầu (Co-op) -----
   socket.on('startGame', () => {
     const code = socket.data.room;
     const room = rooms[code];
@@ -276,20 +561,36 @@ io.on('connection', (socket) => {
     startCoop(code);
   });
 
-  // ----- Vị trí tàu -----
   socket.on('state', (d) => {
     const code = socket.data.room;
     const room = rooms[code];
     if (!room || !d) return;
     if (room.mode === 'pvp') {
       if (!room.started || room.over) return;
-      const state = {
+      const prev = room.latestHumanState || { x: 0, z: 12, vx: 0, vz: 0 };
+      const next = {
         x: clamp(Number(d.x) || 0, -COOP.ARENA, COOP.ARENA),
         z: clamp(Number(d.z) || 0, -COOP.ARENA, COOP.ARENA),
         rotation: clamp(Number(d.rotation) || 0, -Math.PI, Math.PI),
         hp: clamp(Number(d.hp) || 0, 0, 150),
+        vx: (Number(d.x) || 0) - prev.x,
+        vz: (Number(d.z) || 0) - prev.z,
       };
-      socket.to(code).emit('opponentState', state);
+      room.latestHumanState = next;
+      const human = room.players.find((p) => !p.bot && p.id === socket.id);
+      if (human) {
+        human.x = next.x;
+        human.z = next.z;
+        human.hp = next.hp;
+        human.vx = next.vx;
+        human.vz = next.vz;
+      }
+      socket.to(code).emit('opponentState', {
+        x: next.x,
+        z: next.z,
+        rotation: next.rotation,
+        hp: next.hp,
+      });
     } else {
       const p = room.players.find((x) => x.id === socket.id);
       if (p && p.alive) {
@@ -299,13 +600,23 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ----- Bắn -----
   socket.on('shoot', (d) => {
     const code = socket.data.room;
     const room = rooms[code];
     if (!room || !d) return;
     if (room.mode === 'pvp') {
       if (!room.started || room.over) return;
+      room.projectiles = room.projectiles || [];
+      room.projectiles.push({
+        x: Number(d.x) || 0,
+        z: Number(d.z) || 0,
+        vx: Number(d.vx) || 0,
+        vz: Number(d.vz) || 0,
+        radius: 0.4,
+        owner: 1,
+        ttl: 2.4,
+        createdAt: Date.now(),
+      });
       socket.to(code).emit('opponentShoot', d);
       return;
     }
@@ -314,7 +625,7 @@ io.on('connection', (socket) => {
     if (!sim || !sim.timer || room.over || !p || !p.alive) return;
 
     const now = Date.now();
-    if (now - p.lastShot < SHIP_CD[p.ship] * 1000 * 0.8) return; // chống bắn quá nhanh
+    if (now - p.lastShot < SHIP_CD[p.ship] * 1000 * 0.8) return;
     p.lastShot = now;
     p.x = clamp(Number(d.x) || p.x, -COOP.ARENA, COOP.ARENA);
     p.z = clamp(Number(d.z) || p.z, -COOP.ARENA, COOP.ARENA);
@@ -323,7 +634,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ----- Chết (PvP) -----
   socket.on('died', () => {
     const code = socket.data.room;
     const room = rooms[code];
@@ -334,7 +644,6 @@ io.on('connection', (socket) => {
     io.to(code).emit('gameOver', { loser: p.number });
   });
 
-  // ----- Ngắt kết nối -----
   socket.on('disconnect', () => {
     const code = socket.data.room;
     const room = rooms[code];
@@ -343,6 +652,11 @@ io.on('connection', (socket) => {
     if (idx < 0) return;
 
     if (room.mode === 'pvp') {
+      if (room.bot && socket.id === room.bot.id) {
+        room.bot = null;
+      }
+      if (room.botLoop) stopPvpBotLoop(code);
+      room.over = true;
       socket.to(code).emit('opponentLeft');
       delete rooms[code];
       return;
