@@ -198,6 +198,41 @@ canvas {
     border-radius: 4px;
 }
 
+.solo-buffs {
+    position: fixed;
+    top: 82px;
+    left: 12px;
+    z-index: 51;
+    display: none;
+    flex-wrap: wrap;
+    gap: 7px;
+    max-width: min(460px, calc(100vw - 24px));
+    color: #fff;
+    font: 700 14px/1.2 'Segoe UI', Tahoma, sans-serif;
+    text-shadow: 0 1px 5px #000;
+    user-select: none;
+}
+
+.buff-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 6px 10px;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    background: rgba(5, 12, 24, .76);
+    box-shadow: 0 0 12px currentColor;
+}
+
+.buff-chip.shield { color: #75e8ff; }
+.buff-chip.multishot { color: #ff83df; }
+.buff-chip.rapid { color: #ffd76a; }
+
+@media (max-width: 520px) {
+    .solo-buffs { top: 76px; font-size: 12px; }
+    .buff-chip { min-height: 27px; padding: 5px 7px; }
+}
+
 @media (max-width: 520px) {
     #lobby-menu { padding: 14px; }
     .panel h1 { font-size: 28px; }
