@@ -33,8 +33,17 @@ const BOT_PROFILE = {
   2: { reactionMs: 170, aimError: 0.45, fireBias: 1, stray: 0.65, chaseBias: 1 },
   3: { reactionMs: 100, aimError: 0.22, fireBias: 0.8, stray: 0.45, chaseBias: 1.18 },
 };
-const PLAYER_TARGET_SPEED = 7.8;
-const PLAYER_TARGET_ACCEL = 28;
+const SHIP_FOLLOW_SPEED = 12;
+const SHIP_MAX_SPEED = 18;
+const SHIP_ACCEL = 70;
+const SHIP_STOP_RADIUS = 0.28;
+const SHIP_SPEED_BY_CLASS = {
+  destroyer: 18,
+  corvette: 20,
+  frigate: 16,
+  cruiser: 13,
+  dreadnought: 11,
+};
 
 const COOP = {
   ARENA: 14,
@@ -60,21 +69,23 @@ function movePlayerTowardTarget(player, dt) {
   player.targetX = targetX;
   player.targetZ = targetZ;
 
+  const shipClass = player.ship === '2' ? 'corvette' : player.ship === '3' ? 'cruiser' : 'destroyer';
+  const maxSpeed = Math.min(SHIP_MAX_SPEED, SHIP_SPEED_BY_CLASS[shipClass]);
   const dx = targetX - player.x;
   const dz = targetZ - player.z;
   const distance = Math.hypot(dx, dz);
-  const speedScale = distance > 0 ? Math.min(PLAYER_TARGET_SPEED, PLAYER_TARGET_SPEED * Math.max(0.18, distance / 1.8)) / distance : 0;
-  const desiredX = dx * speedScale;
-  const desiredZ = dz * speedScale;
-  player.vx += clamp(desiredX - player.vx, -PLAYER_TARGET_ACCEL * dt, PLAYER_TARGET_ACCEL * dt);
-  player.vz += clamp(desiredZ - player.vz, -PLAYER_TARGET_ACCEL * dt, PLAYER_TARGET_ACCEL * dt);
-  if (distance < 0.12) {
-    player.vx *= 0.72;
-    player.vz *= 0.72;
+  const desiredSpeed = distance < SHIP_STOP_RADIUS ? 0 : Math.min(maxSpeed, distance * SHIP_FOLLOW_SPEED);
+  const desiredX = distance > 0 ? dx / distance * desiredSpeed : 0;
+  const desiredZ = distance > 0 ? dz / distance * desiredSpeed : 0;
+  player.vx += clamp(desiredX - player.vx, -SHIP_ACCEL * dt, SHIP_ACCEL * dt);
+  player.vz += clamp(desiredZ - player.vz, -SHIP_ACCEL * dt, SHIP_ACCEL * dt);
+  if (distance < SHIP_STOP_RADIUS) {
+    player.vx *= 0.35;
+    player.vz *= 0.35;
   }
   player.x = clamp(player.x + player.vx * dt, -COOP.ARENA, COOP.ARENA);
   player.z = clamp(player.z + player.vz * dt, -COOP.ARENA, COOP.ARENA);
-  player.rotation = clamp(-player.vx / PLAYER_TARGET_SPEED * 0.42, -0.42, 0.42);
+  player.rotation = clamp(-player.vx / maxSpeed * 0.42, -0.42, 0.42);
 }
 
 function genCode() {
@@ -611,9 +622,14 @@ io.on('connection', (socket) => {
       room.latestHumanState = next;
       const human = room.players.find((p) => !p.bot && p.id === socket.id);
       if (human) {
-        human.targetX = clamp(Number(d.targetX) || human.targetX || human.x, -COOP.ARENA, COOP.ARENA);
-        human.targetZ = clamp(Number(d.targetZ) || human.targetZ || human.z, -COOP.ARENA, COOP.ARENA);
-        movePlayerTowardTarget(human, 0.05);
+        const targetX = Number.isFinite(Number(d.targetX)) ? Number(d.targetX) : human.targetX;
+        const targetZ = Number.isFinite(Number(d.targetZ)) ? Number(d.targetZ) : human.targetZ;
+        human.targetX = clamp(targetX, -COOP.ARENA, COOP.ARENA);
+        human.targetZ = clamp(targetZ, -COOP.ARENA, COOP.ARENA);
+        const now = Date.now();
+        const receiveDt = clamp((now - (human._lastMoveAt || now)) / 1000, 0.01, 0.05);
+        human._lastMoveAt = now;
+        movePlayerTowardTarget(human, receiveDt);
         human.hp = next.hp;
         human.vx = Number(d.vx) || 0;
         human.vz = Number(d.vz) || 0;
@@ -632,8 +648,10 @@ io.on('connection', (socket) => {
     } else {
       const p = room.players.find((x) => x.id === socket.id);
       if (p && p.alive) {
-        p.targetX = clamp(Number(d.targetX) || 0, -COOP.ARENA, COOP.ARENA);
-        p.targetZ = clamp(Number(d.targetZ) || 0, -COOP.ARENA, COOP.ARENA);
+        const targetX = Number.isFinite(Number(d.targetX)) ? Number(d.targetX) : p.targetX;
+        const targetZ = Number.isFinite(Number(d.targetZ)) ? Number(d.targetZ) : p.targetZ;
+        p.targetX = clamp(targetX, -COOP.ARENA, COOP.ARENA);
+        p.targetZ = clamp(targetZ, -COOP.ARENA, COOP.ARENA);
       }
     }
   });

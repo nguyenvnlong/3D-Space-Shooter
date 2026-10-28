@@ -177,13 +177,28 @@ const SOLO_BALANCE = {
     pickupSpeed: 1.2,
     maxPooledParticles: 72,
 };
+const SHIP_FOLLOW_SPEED = 12;
+const SHIP_MAX_SPEED = 18;
+const SHIP_ACCEL = 70;
+const SHIP_SPEED_BY_CLASS = {
+    destroyer: 18,
+    corvette: 20,
+    frigate: 16,
+    cruiser: 13,
+    dreadnought: 11,
+};
+const PLAYER_STOP_RADIUS = 0.28;
+const PLAYER_SEND_RATE_MS = 25;
+const PLAYER_BANK_AMOUNT = 0.42;
+const PLAYER_PITCH_AMOUNT = 0.16;
 const PLAYER_CURSOR_BALANCE = {
-    followSpeed: 7.8,
-    maxAccel: 28,
-    stopRadius: 0.12,
-    sendRateMs: 50,
-    bankAmount: 0.42,
-    pitchAmount: 0.16,
+    followSpeed: SHIP_FOLLOW_SPEED,
+    maxSpeed: SHIP_MAX_SPEED,
+    maxAccel: SHIP_ACCEL,
+    stopRadius: PLAYER_STOP_RADIUS,
+    sendRateMs: PLAYER_SEND_RATE_MS,
+    bankAmount: PLAYER_BANK_AMOUNT,
+    pitchAmount: PLAYER_PITCH_AMOUNT,
 };
 
 const SOLO_WAVE_BALANCE = {
@@ -200,17 +215,24 @@ const SOLO_WAVE_BALANCE = {
     maxEnemiesPerWave: 12,
     startingLives: 3,
 };
+const ENEMY_MIN_DIST = 14;
+const ENEMY_MAX_DIST = 28;
+const ENEMY_SPEED = { scout: 5.6, fighter: 4.8, bomber: 3.1, boss: 4.5 };
+const ENEMY_DODGE_CHANCE = 0.24;
+const ENEMY_AIM_ERROR = 0.38;
+const ENEMY_COMBAT_Z_MIN = -60;
+const ENEMY_COMBAT_Z_MAX = -40;
 const ENEMY_AI_BALANCE = {
-    maxAccel: { scout: 7.5, fighter: 5.8, bomber: 3.2, boss: 5.5 },
-    maxSpeed: { scout: 4.2, fighter: 3.6, bomber: 2.2, boss: 4.3 },
+    maxAccel: { scout: 8.5, fighter: 7.0, bomber: 4.4, boss: 6.0 },
+    maxSpeed: ENEMY_SPEED,
     reactionBase: 0.24,
     reactionPerWave: 0.012,
     dodgeBase: 0.18,
     dodgePerWave: 0.035,
     aimErrorBase: 0.5,
     aimErrorPerWave: 0.018,
-    separationRadius: 2.7,
-    separationStrength: 5.2,
+    separationRadius: 4.1,
+    separationStrength: 7.5,
 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -1020,7 +1042,7 @@ function startSoloWave(wave) {
             type,
             targetX: target.x,
             targetY: target.y,
-            targetZ: -14,
+            targetZ: -48,
             hp: (SOLO_WAVE_BALANCE.enemyHp + (wave - 1) * SOLO_WAVE_BALANCE.enemyHpPerWave) * archetype.hp * waveDifficulty,
             maxHp: (SOLO_WAVE_BALANCE.enemyHp + (wave - 1) * SOLO_WAVE_BALANCE.enemyHpPerWave) * archetype.hp * waveDifficulty,
             speed: (SOLO_WAVE_BALANCE.enemySpeed + (wave - 1) * SOLO_WAVE_BALANCE.enemySpeedPerWave) * archetype.speed,
@@ -1097,12 +1119,12 @@ function steerEnemy(enemy, targetX, targetY, targetZ, maxSpeed, dt) {
     enemy.mesh.position.z += enemy.vz * dt;
     enemy.mesh.position.x = clamp(enemy.mesh.position.x, -12.5, 12.5);
     enemy.mesh.position.y = clamp(enemy.mesh.position.y, -8.5, 8.5);
-    enemy.mesh.position.z = clamp(enemy.mesh.position.z, -34, 12);
+    enemy.mesh.position.z = clamp(enemy.mesh.position.z, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX);
 }
 
 function aimEnemyShot(enemy, shotSpeed, spread = 0, homing = false, homingTime = 0) {
     const travel = Math.hypot(myShip.position.x - enemy.mesh.position.x, myShip.position.y - enemy.mesh.position.y, myShip.position.z - enemy.mesh.position.z) / shotSpeed;
-    const aimError = ENEMY_AI_BALANCE.aimErrorBase + Math.max(0, soloWave - 1) * ENEMY_AI_BALANCE.aimErrorPerWave;
+    const aimError = ENEMY_AIM_ERROR + Math.max(0, soloWave - 1) * ENEMY_AI_BALANCE.aimErrorPerWave;
     const aimX = myShip.position.x + playerVelocity.x * travel + (Math.random() - 0.5) * aimError;
     const aimY = myShip.position.y + playerVelocity.y * travel + (Math.random() - 0.5) * aimError;
     const aimZ = myShip.position.z + playerVelocity.z * travel;
@@ -1122,18 +1144,19 @@ function aimEnemyShot(enemy, shotSpeed, spread = 0, homing = false, homingTime =
 function getFormationSlot(enemy, index) {
     const count = soloEnemies.length || 1;
     const shape = enemy.formationShape;
+    const depth = -48 - (index % 3) * 4 + Math.sin(enemy.phase * 0.4) * 1.5;
     if (shape === 0) {
         const row = index - (count - 1) / 2;
-        return { x: row * 3.1 + Math.sin(enemy.phase * 0.5) * 0.25, y: Math.sin(enemy.phase * 0.75) * 0.8, z: -14 - Math.abs(row) * 0.4 };
+        return { x: row * 3.8 + Math.sin(enemy.phase * 0.5) * 0.45, y: Math.sin(enemy.phase * 0.75) * 1.2, z: clamp(depth, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX) };
     }
     if (shape === 1) {
         const angle = Math.PI * 2 * index / count;
-        return { x: Math.cos(angle) * 5.2, y: Math.sin(angle) * 2.8 + Math.sin(enemy.phase) * 0.35, z: -14 + Math.cos(angle) * 1.2 };
+        return { x: Math.cos(angle) * 6.7, y: Math.sin(angle) * 3.6 + Math.sin(enemy.phase) * 0.5, z: clamp(depth + Math.cos(angle) * 2.5, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX) };
     }
     const row = Math.floor(index / 3);
     const col = index % 3;
-    const width = (col - 1) * 2.8;
-    return { x: width, y: 1.4 - row * 1.8 + Math.sin(enemy.phase + col) * 0.35, z: -15 - row };
+    const width = (col - 1) * 3.6;
+    return { x: width, y: 2.0 - row * 2.2 + Math.sin(enemy.phase + col) * 0.5, z: clamp(-52 - row * 4, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX) };
 }
 
 function updateSoloEnemies(dt, diff) {
@@ -1158,21 +1181,25 @@ function updateSoloEnemies(dt, diff) {
         if (enemy.type === 'scout') {
             if (enemy.state === 'ENTRY' && enemy.stateTimer <= 0) enemy.state = 'ZIGZAG';
             if (enemy.state === 'ZIGZAG') {
-                targetX += Math.sin(enemy.phase * 1.8) * 2.2;
-                targetY += Math.cos(enemy.phase * 2.35) * 1.25;
+                targetX += Math.sin(enemy.phase * 1.8) * 2.4;
+                targetY += Math.cos(enemy.phase * 2.35) * 1.35;
+                targetZ = clamp(slot.z - 2, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX);
                 if (enemy.stateTimer <= -4 - Math.random() * 2) {
                     enemy.state = 'DIVE';
-                    enemy.stateTimer = 1.05;
+                    enemy.stateTimer = 0.75;
+                    enemy.diveX = myShip.position.x;
+                    enemy.diveY = myShip.position.y;
                 }
             } else if (enemy.state === 'DIVE') {
-                targetX = myShip.position.x;
-                targetY = myShip.position.y;
-                targetZ = myShip.position.z;
+                targetX = enemy.diveX ?? myShip.position.x;
+                targetY = enemy.diveY ?? myShip.position.y;
+                targetZ = ENEMY_COMBAT_Z_MAX;
                 if (enemy.stateTimer <= 0) enemy.state = 'RECOVER';
             } else if (enemy.state === 'RECOVER') {
                 targetX = slot.x;
-                targetY = slot.y + 3.5;
-                if (enemy.stateTimer <= -1.1) {
+                targetY = slot.y;
+                targetZ = clamp(ENEMY_COMBAT_Z_MIN + 8, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX);
+                if (enemy.stateTimer <= -1.2) {
                     enemy.state = 'ZIGZAG';
                     enemy.stateTimer = 3 + Math.random() * 3;
                 }
@@ -1180,22 +1207,31 @@ function updateSoloEnemies(dt, diff) {
         } else if (enemy.type === 'fighter') {
             const dx = enemy.mesh.position.x - myShip.position.x;
             const dz = enemy.mesh.position.z - myShip.position.z;
-            const angle = Math.atan2(dz, dx) + enemy.orbitDir * dt * 0.55;
-            const orbitRadius = 8.5;
-            targetX = myShip.position.x + Math.cos(angle) * orbitRadius;
+            const baseAngle = Math.atan2(dz, dx);
+            const orbitAngle = baseAngle + enemy.orbitDir * enemy.phase * 0.12;
+            const orbitX = Math.max(ENEMY_MIN_DIST, 16) * Math.cos(orbitAngle);
+            targetX = myShip.position.x + Math.cos(orbitAngle) * Math.abs(orbitX) + Math.sin(enemy.phase * 0.7) * 2;
             targetY = myShip.position.y + Math.sin(enemy.phase * 0.9) * 1.8;
-            targetZ = myShip.position.z + Math.sin(angle) * 7;
+            targetZ = clamp(slot.z + Math.sin(orbitAngle) * 3, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX);
 
             if (enemy.reactionTimer <= 0) {
                 let threatened = false;
                 for (const bullet of bullets) {
                     if (!bullet.mine) continue;
-                    const futureX = bullet.mesh.position.x + bullet.vx;
-                    const futureY = bullet.mesh.position.y + (bullet.vy || 0);
-                    const futureZ = bullet.mesh.position.z + bullet.vz;
-                    if (Math.hypot(futureX - enemy.mesh.position.x, futureY - enemy.mesh.position.y, futureZ - enemy.mesh.position.z) < 2.3) threatened = true;
+                    const bx = bullet.mesh.position.x, by = bullet.mesh.position.y, bz = bullet.mesh.position.z;
+                    const vx = bullet.vx, vy = bullet.vy || 0, vz = bullet.vz;
+                    const speed2 = vx * vx + vy * vy + vz * vz || 1;
+                    let step = 1;
+                    for (; step <= 60; step++) {
+                        const t = step / 60;
+                        const ex = bx + vx * t - enemy.mesh.position.x;
+                        const ey = by + vy * t - enemy.mesh.position.y;
+                        const ez = bz + vz * t - enemy.mesh.position.z;
+                        if (ex * ex + ey * ey + ez * ez < 3.2 * 3.2) { threatened = true; break; }
+                        if (t >= 1) break;
+                    }
                 }
-                if (threatened && Math.random() < Math.min(0.78, ENEMY_AI_BALANCE.dodgeBase + soloWave * ENEMY_AI_BALANCE.dodgePerWave)) {
+                if (threatened && Math.random() < Math.min(0.78, ENEMY_DODGE_CHANCE + (soloWave - 1) * 0.035)) {
                     enemy.state = 'ROLL';
                     enemy.stateTimer = 0.48;
                     enemy.dodgeDir *= -1;
@@ -1203,7 +1239,7 @@ function updateSoloEnemies(dt, diff) {
                 enemy.reactionTimer = ENEMY_AI_BALANCE.reactionBase + Math.max(0, soloWave - 1) * ENEMY_AI_BALANCE.reactionPerWave;
             }
             if (enemy.state === 'ROLL' && enemy.stateTimer > 0) {
-                targetX += enemy.dodgeDir * 4;
+                targetX += enemy.dodgeDir * 4.5;
                 targetY += Math.sin(enemy.phase * 4) * 1.2;
                 enemy.mesh.rotation.z += dt * enemy.dodgeDir * 9;
             } else {
@@ -1211,13 +1247,16 @@ function updateSoloEnemies(dt, diff) {
             }
         } else if (enemy.type === 'bomber') {
             const distance = Math.hypot(myShip.position.x - enemy.mesh.position.x, myShip.position.z - enemy.mesh.position.z);
-            const preferred = 12;
-            if (distance < preferred - 2) {
-                targetX = enemy.mesh.position.x + (enemy.mesh.position.x - myShip.position.x) * 2;
-                targetY = myShip.position.y + Math.sin(enemy.phase * 0.45) * 1.1;
-                targetZ = enemy.mesh.position.z + (enemy.mesh.position.z - myShip.position.z) * 2;
+            if (distance < ENEMY_MIN_DIST) {
+                targetX = enemy.mesh.position.x + (enemy.mesh.position.x - myShip.position.x) * 1.7;
+                targetY = slot.y + Math.sin(enemy.phase) * 1.1;
+                targetZ = ENEMY_COMBAT_Z_MIN;
+            } else if (distance > ENEMY_MAX_DIST) {
+                targetX = myShip.position.x + Math.sin(enemy.phase) * 4;
+                targetY = slot.y;
+                targetZ = slot.z;
             } else {
-                targetX = slot.x;
+                targetX = slot.x + Math.sin(enemy.phase * 0.55) * 2;
                 targetY = slot.y;
                 targetZ = slot.z;
             }
@@ -1264,7 +1303,7 @@ function updateSoloBoss(dt, diff) {
 
     let targetX = Math.sin(soloBoss.phase * (phase === 3 ? 1.15 : 0.75)) * (phase === 3 ? 7.5 : 6);
     let targetY = Math.sin(soloBoss.phase * 0.55) * 1.8;
-    let targetZ = -15 + Math.cos(soloBoss.phase) * 1.2;
+    let targetZ = clamp(-48 + Math.cos(soloBoss.phase) * 4, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX);
 
     if (soloBoss.state === 'TELEGRAPH') {
         targetX = soloBoss.mesh.position.x;
@@ -1278,9 +1317,9 @@ function updateSoloBoss(dt, diff) {
     } else {
         soloBoss.mesh.scale.setScalar(1);
         if (soloBoss.state === 'CHARGE' || soloBoss.state === 'RAPID') {
-            targetX = myShip.position.x;
-            targetY = myShip.position.y;
-            targetZ = -12;
+            targetX = clamp(myShip.position.x, -12, 12);
+            targetY = clamp(myShip.position.y, -8, 8);
+            targetZ = ENEMY_COMBAT_Z_MIN + 8;
         }
     }
 
@@ -1294,7 +1333,7 @@ function updateSoloBoss(dt, diff) {
     soloBoss.vz += clamp(desiredZ - soloBoss.vz, -bossAccel * dt, bossAccel * dt);
     soloBoss.mesh.position.x = clamp(soloBoss.mesh.position.x + soloBoss.vx * dt, -12, 12);
     soloBoss.mesh.position.y = clamp(soloBoss.mesh.position.y + soloBoss.vy * dt, -8, 8);
-    soloBoss.mesh.position.z = clamp(soloBoss.mesh.position.z + soloBoss.vz * dt, -20, 8);
+    soloBoss.mesh.position.z = clamp(soloBoss.mesh.position.z + soloBoss.vz * dt, ENEMY_COMBAT_Z_MIN, ENEMY_COMBAT_Z_MAX);
     soloBoss.mesh.rotation.x += dt * 0.65;
     soloBoss.mesh.rotation.y += dt * 0.9;
 
@@ -1316,7 +1355,7 @@ function updateSoloBoss(dt, diff) {
         mesh.position.set(soloBoss.mesh.position.x + (Math.random() - 0.5) * 4, soloBoss.mesh.position.y, soloBoss.mesh.position.z - 3);
         mesh.visible = true;
         scene.add(mesh);
-        soloEnemies.push({ mesh, type: 'scout', targetX: 0, targetY: 0, targetZ: -14, hp: 55, maxHp: 55, vx: 0, vy: 0, vz: 0, state: 'ENTRY', stateTimer: 0.6, phase: Math.random() * 6, reactionTimer: 0, orbitDir: 1, dodgeDir: 1, formationIndex: soloEnemies.length, formationShape: soloWave % 3, formationTimer: 5 + Math.random() * 3, shield: 0, fireTimer: 1.5, speed: 2.2 });
+        soloEnemies.push({ mesh, type: 'scout', targetX: 0, targetY: 0, targetZ: -48, hp: 55, maxHp: 55, vx: 0, vy: 0, vz: 0, state: 'ENTRY', stateTimer: 0.6, phase: Math.random() * 6, reactionTimer: 0, orbitDir: 1, dodgeDir: 1, formationIndex: soloEnemies.length, formationShape: soloWave % 3, formationTimer: 5 + Math.random() * 3, shield: 0, fireTimer: 1.5, speed: 2.2 });
     }
 
     if (soloBoss.stateTimer <= 0 && soloBoss.state !== 'TELEGRAPH') {
@@ -1742,12 +1781,13 @@ function update(dt, now) {
             const targetDx = playerTarget.x - myShip.position.x;
             const targetDy = playerTarget.y - myShip.position.y;
             const distance = Math.hypot(targetDx, targetDy);
-            const scale = distance > 0 ? Math.min(PLAYER_CURSOR_BALANCE.followSpeed * moveMul, PLAYER_CURSOR_BALANCE.followSpeed * moveMul * Math.max(0.18, distance / 1.8)) / distance : 0;
-            const desiredX = targetDx * scale;
-            const desiredY = targetDy * scale;
-            playerVelocity.x += clamp(desiredX - playerVelocity.x, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
-            playerVelocity.y += clamp(desiredY - playerVelocity.y, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
-            if (distance < PLAYER_CURSOR_BALANCE.stopRadius) playerVelocity.x *= 0.72, playerVelocity.y *= 0.72;
+            const maxSpeed = SHIP_SPEED_BY_CLASS.destroyer * moveMul;
+            const desiredSpeed = distance < PLAYER_STOP_RADIUS ? 0 : Math.min(maxSpeed, distance * SHIP_FOLLOW_SPEED);
+            const desiredX = distance > 0 ? targetDx / distance * desiredSpeed : 0;
+            const desiredY = distance > 0 ? targetDy / distance * desiredSpeed : 0;
+            playerVelocity.x += clamp(desiredX - playerVelocity.x, -SHIP_ACCEL * dt, SHIP_ACCEL * dt);
+            playerVelocity.y += clamp(desiredY - playerVelocity.y, -SHIP_ACCEL * dt, SHIP_ACCEL * dt);
+            if (distance < PLAYER_STOP_RADIUS) playerVelocity.x *= 0.35, playerVelocity.y *= 0.35;
             myShip.position.x = clamp(myShip.position.x + playerVelocity.x * dt, -ARENA, ARENA);
             myShip.position.y = clamp(myShip.position.y + playerVelocity.y * dt, -ARENA * 0.62, ARENA * 0.62);
             playerVelocity.z = 0;
@@ -1763,12 +1803,14 @@ function update(dt, now) {
             const targetDx = playerTarget.x - myShip.position.x;
             const targetDz = playerTarget.z - myShip.position.z;
             const distance = Math.hypot(targetDx, targetDz);
-            const scale = distance > 0 ? Math.min(PLAYER_CURSOR_BALANCE.followSpeed * moveMul, PLAYER_CURSOR_BALANCE.followSpeed * moveMul * Math.max(0.18, distance / 1.8)) / distance : 0;
-            const desiredX = targetDx * scale;
-            const desiredZ = targetDz * scale;
-            playerVelocity.x += clamp(desiredX - playerVelocity.x, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
-            playerVelocity.z += clamp(desiredZ - playerVelocity.z, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
-            if (distance < PLAYER_CURSOR_BALANCE.stopRadius) playerVelocity.x *= 0.72, playerVelocity.z *= 0.72;
+            const selectedMaxSpeed = myStats ? SHIP_SPEED_BY_CLASS[({ '1': 'destroyer', '2': 'corvette', '3': 'cruiser' })[String(myStats.ship || '1')]] || SHIP_SPEED_BY_CLASS.destroyer : SHIP_SPEED_BY_CLASS.destroyer;
+            const maxSpeed = Math.min(SHIP_MAX_SPEED, selectedMaxSpeed * moveMul);
+            const desiredSpeed = distance < PLAYER_STOP_RADIUS ? 0 : Math.min(maxSpeed, distance * SHIP_FOLLOW_SPEED);
+            const desiredX = distance > 0 ? targetDx / distance * desiredSpeed : 0;
+            const desiredZ = distance > 0 ? targetDz / distance * desiredSpeed : 0;
+            playerVelocity.x += clamp(desiredX - playerVelocity.x, -SHIP_ACCEL * dt, SHIP_ACCEL * dt);
+            playerVelocity.z += clamp(desiredZ - playerVelocity.z, -SHIP_ACCEL * dt, SHIP_ACCEL * dt);
+            if (distance < PLAYER_STOP_RADIUS) playerVelocity.x *= 0.35, playerVelocity.z *= 0.35;
             myShip.position.x = clamp(myShip.position.x + playerVelocity.x * dt, -ARENA, ARENA);
             myShip.position.z = clamp(myShip.position.z + playerVelocity.z * dt, -ARENA, ARENA);
             playerVelocity.y = 0;
@@ -2152,8 +2194,12 @@ socket.on('snapshot', (s) => {
         if (n === myNumber) {
             myHp = hp;
             if (!soloMode && myShip) {
-                myShip.position.x = x;
-                myShip.position.z = z;
+                const serverError = Math.hypot(x - myShip.position.x, z - myShip.position.z);
+                if (serverError > 0.5) {
+                    const reconcile = Math.min(0.22, serverError * 0.08);
+                    myShip.position.x += (x - myShip.position.x) * reconcile;
+                    myShip.position.z += (z - myShip.position.z) * reconcile;
+                }
             }
             if (!al && alive) {
                 alive = false;

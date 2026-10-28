@@ -1,0 +1,256 @@
+<!DOCTYPE html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hải chiến vũ trụ 3D – Bay tự do</title>
+<style>
+:root{--bg:#02030a;--fg:#e8f0ff;--ac:#6fb8ff;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:"Trebuchet MS",system-ui,sans-serif;overflow:hidden;user-select:none}
+canvas#c,#hud2{position:fixed;inset:0;width:100%;height:100%;display:block}
+#hud2{pointer-events:none}
+#hud{position:fixed;left:14px;top:calc(env(safe-area-inset-top,0px) + 10px);font-weight:700;text-shadow:0 0 8px #000;pointer-events:none}
+#bar{width:min(240px,50vw);height:10px;border-radius:5px;background:#ffffff22;overflow:hidden;margin:6px 0}
+#hp{height:100%;width:100%;background:linear-gradient(90deg,#ff4d6d,#5dff8a)}
+#mm{position:fixed;left:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 12px);width:140px;height:140px;border-radius:50%;background:#0a1030cc;border:2px solid #2a3a7a}
+#tip{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);text-align:center;font-size:13px;opacity:.7;text-shadow:0 0 6px #000;pointer-events:none}
+#bn{position:fixed;left:0;right:0;top:28%;text-align:center;font-size:clamp(26px,6vw,52px);font-weight:800;letter-spacing:.05em;opacity:0;transition:opacity .4s;text-shadow:0 0 24px var(--ac);pointer-events:none}
+#ck{position:fixed;inset:0;pointer-events:none;display:none;background:radial-gradient(ellipse at center,transparent 55%,#000a 100%);box-shadow:inset 0 0 0 14px #0b1022,inset 0 -90px 60px -30px #05070f}
+button{font:inherit;font-weight:700;padding:12px 18px;border:2px solid #2a3558;border-radius:10px;background:#0e1430;color:var(--fg);cursor:pointer}
+button:hover{border-color:var(--ac)}button:focus-visible{outline:3px solid #fff;outline-offset:2px}
+#ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:#050816dd;text-align:center;padding:20px;overflow:auto}
+#ov h1{margin:0;font-size:clamp(26px,7vw,48px)}#ov p{margin:0;max-width:560px;line-height:1.55;opacity:.88}
+#sel{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:6px}#sel button{width:min(220px,44vw);line-height:1.4}
+</style></head><body>
+<canvas id="c"></canvas><canvas id="hud2"></canvas><div id="ck"></div>
+<div id="hud"><div id="sc"></div><div id="bar"><div id="hp"></div></div><div id="bf"></div></div>
+<canvas id="mm" width="140" height="140"></canvas><div id="tip">W A S D bay · Space lên · C xuống · R bắn · Shift nước rút · V đổi góc nhìn</div><div id="bn"></div>
+<div id="ov"><h1 id="t1">Hải chiến vũ trụ 3D</h1><p id="t2">Bay tự do trong không gian 3D thật. Chuột chỉ để nhìn: tàu tự quay mũi theo hướng nhìn. W/S tiến lùi, A/D đi ngang, Space bay lên, C bay xuống, R để bắn, Shift nước rút, V đổi giữa góc ngoài tàu và buồng lái. Nhấp chuột để khóa chuột (Esc để thoát). Chọn tàu:</p><div id="sel"></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ===== ship-models.js: mô hình tàu chiến dựng bằng code three.js (r128), không cần file model =====
+// Quy ước: mũi tàu hướng -Z (giống game), đuôi +Z, đáy tàu ở y=0.
+// Cách dùng:  const g = SHIPS.destroyer.build(); scene.add(g);   rồi mỗi frame gọi  animateShip(g, thoiGianGiay);
+// g.userData có: tur (tháp pháo), rad (radar), fl (lửa động cơ), lt (đèn hành trình), core (lõi năng lượng, nếu có).
+// Muốn chỉnh tàu: sửa thông số trong SHIPS (L=dài, W=rộng, H=cao thân, tur=tháp pháo, br=tháp chỉ huy, eng=số động cơ...).
+const GC={},MC={},BC={};
+const G=(k,f)=>GC[k]||(GC[k]=f());                       // cache geometry dùng chung để game không giật
+const mat=(c,e=.12)=>MC[c+'_'+e]||(MC[c+'_'+e]=new THREE.MeshStandardMaterial({color:c,emissive:c,emissiveIntensity:e,metalness:.7,roughness:.4}));
+const glow=c=>BC[c]||(BC[c]=new THREE.MeshBasicMaterial({color:c}));
+const DK=mat(0x1b2030,.02);
+
+function _box(g,w,h,d,x,y,z,m){const o=new THREE.Mesh(G('b'+w+','+h+','+d,()=>new THREE.BoxGeometry(w,h,d)),m);o.position.set(x,y,z);g.add(o);return o}
+function _cyl(g,r,h,x,y,z,m,alongZ){const o=new THREE.Mesh(G('c'+r+','+h,()=>new THREE.CylinderGeometry(r,r*1.1,h,12)),m);o.position.set(x,y,z);if(alongZ)o.rotation.x=Math.PI/2;g.add(o);return o}
+
+// Thân tàu: đa giác nhìn từ trên xuống (mũi nhọn, mạn vát) rồi đùn lên theo chiều cao H
+function _hull(L,W,H){return G('h'+L+','+W+','+H,()=>{const s=new THREE.Shape(),a=W/2;
+ s.moveTo(-a*.85,-L/2);s.lineTo(a*.85,-L/2);s.lineTo(a,-L*.1);s.lineTo(a*.55,L*.32);s.lineTo(0,L/2);s.lineTo(-a*.55,L*.32);s.lineTo(-a,-L*.1);s.closePath();
+ const g=new THREE.ExtrudeGeometry(s,{depth:H,bevelEnabled:false});g.rotateX(-Math.PI/2);return g})}
+
+// Tháp pháo: đế tròn + thân hộp + nòng pháo (nb nòng). Xoay quanh trục Y để ngắm mục tiêu.
+function _turret(g,x,y,z,s,nb,col){const t=new THREE.Group();t.position.set(x,y,z);
+ _cyl(t,.6*s,.3*s,0,.15*s,0,mat(col,.1));_box(t,.9*s,.4*s,1*s,0,.5*s,0,mat(col,.15));
+ for(let i=0;i<nb;i++)_cyl(t,.07*s,1.7*s,(i-(nb-1)/2)*.38*s,.55*s,-1.2*s,DK,true);
+ g.add(t);g.userData.tur.push(t)}
+
+// Động cơ: ống phụt + lửa (nón) nhấp nháy
+function _eng(g,L,H,W,n,es){for(let i=0;i<n;i++){const x=n===1?0:(i/(n-1)-.5)*W*.6;
+ _cyl(g,.32*es,.8*es,x,H*.55,L/2+.1,DK,true);
+ const f=new THREE.Mesh(G('f'+es,()=>new THREE.ConeGeometry(.28*es,1.8*es,10)),glow(0x66ccff));f.rotation.x=Math.PI/2;f.position.set(x,H*.55,L/2+.5+.9*es);g.add(f);g.userData.fl.push(f)}}
+
+// Hàm dựng tàu chung. f trong các mảng là vị trí dọc thân: +0.5 = mũi, -0.5 = đuôi.
+function makeShip(o){const g=new THREE.Group();g.userData={tur:[],rad:[],fl:[],lt:[]};
+ const {L,W,H,col,acc}=o,m=mat(col,.1),T=o.tiers||0,top=H+T*H*.7;
+ g.add(new THREE.Mesh(_hull(L,W,H),m));
+ const tk=[[.55,.6],[.32,.38]];                              // các tầng boong chồng lên (dài, rộng theo tỉ lệ)
+ for(let i=0;i<T;i++){const t=new THREE.Mesh(_hull(L*tk[i][0],W*tk[i][1],H*.7),mat(col,.12));t.position.set(0,H+i*H*.7,L*.1);g.add(t)}
+ [-1,1].forEach(s=>_box(g,.06,.1,L*.55,s*W*.47,H*.5,L*.02,glow(acc)));   // vạch sáng nhận dạng hai bên mạn
+ (o.tur||[]).forEach(a=>_turret(g,a[3]||0,a[4]||H,-a[0]*L,a[1],a[2],col)); // [f, cỡ, số nòng, x, y]
+ let bt=top;                                                  // tháp chỉ huy + dãy cửa sổ phát sáng
+ if(o.br){const [f,h,w,d]=o.br,z=-f*L;_box(g,w,h,d,0,top+h/2,z,mat(col,.1));_box(g,w*.9,h*.18,.05,0,top+h*.62,z-d/2-.02,glow(0xffe9a0));_box(g,w*.7,h*.35,d*.7,0,top+h*1.17,z,mat(col,.1));bt=top+h*1.35}
+ (o.rad||[]).forEach(a=>{const s=a[1],z=-a[0]*L;_cyl(g,.05*s,1.2*s,0,bt+.6*s,z,DK);g.userData.rad.push(_box(g,1.1*s,.08*s,.5*s,0,bt+1.25*s,z,mat(0xbbc4d0,.05)))}); // radar xoay
+ (o.cells||[]).forEach(a=>{const z=-a[0]*L,sp=a[2]||.12;for(let r=0;r<a[1];r++)[-1,1].forEach(s=>_box(g,W*.14,.06,.35,s*W*sp,H+.03,z+r*.5,mat(0x394057,.05)))}); // bệ tên lửa
+ if(o.core){const c=new THREE.Mesh(G('core',()=>new THREE.SphereGeometry(1,16,12)),glow(0xffb347));c.position.set(0,H*.6,L/2+.1);c.scale.setScalar(o.core);g.add(c);g.userData.core=c;g.userData.cs=o.core}
+ _eng(g,L,H,W,o.eng||2,o.es||1);
+ [[-1,0xff3b3b],[1,0x3bff6b]].forEach(([s,c])=>{const l=new THREE.Mesh(G('lt',()=>new THREE.SphereGeometry(.12,8,6)),glow(c));l.position.set(s*W*.48,H+.12,L*.15);g.add(l);g.userData.lt.push(l)}); // đèn đỏ trái, xanh phải
+ return g}
+
+// Gọi mỗi frame: tháp pháo đảo ngắm, radar xoay, lửa nhấp nháy, đèn chớp, lõi năng lượng đập nhịp
+function animateShip(g,t){const u=g.userData;
+ u.tur.forEach((x,i)=>x.rotation.y=Math.sin(t*.6+i)*.5);u.rad.forEach(r=>r.rotation.y=t*2);
+ u.fl.forEach(f=>f.scale.set(1,.7+Math.random()*.6,1));u.lt.forEach((l,i)=>l.visible=Math.floor(t*2+i)%2===0);
+ if(u.core)u.core.scale.setScalar(u.cs*(1+Math.sin(t*3)*.12))}
+
+// ===== 5 loại tàu theo tàu thật =====
+const SHIPS={
+ destroyer:{short:'Khu trục',name:'Khu trục hạm (Destroyer)',role:'Tàu người chơi',note:'Cân đối, 2 tháp pháo, radar, bệ tên lửa phía đuôi.',
+  build:()=>makeShip({L:14,W:3.2,H:1.1,col:0x6fb8ff,acc:0x00e5ff,tur:[[.22,1,2],[-.25,.9,1]],br:[-.02,1.1,1.5,2],rad:[[-.02,.9]],cells:[[-.38,3]],eng:2})},
+ corvette:{short:'Hộ tống',name:'Tàu hộ tống (Corvette)',role:'Địch trinh sát',note:'Nhỏ, ngắn, nhanh, 1 tháp pháo. Dễ nhận ra nhờ kích thước.',
+  build:()=>makeShip({L:8,W:2.2,H:.9,col:0xff9a3d,acc:0xffe27a,tur:[[.2,.8,1]],br:[-.12,.8,1.1,1.4],rad:[[-.12,.7]],eng:2,es:.8})},
+ frigate:{short:'Frigate',name:'Tàu frigate',role:'Địch chiến đấu',note:'Dài vừa, 2 tháp pháo đôi, radar lớn, bệ tên lửa.',
+  build:()=>makeShip({L:12,W:3,H:1,col:0xb085ff,acc:0xe3d0ff,tur:[[.25,1,2],[-.32,.9,2]],br:[0,1,1.4,1.8],rad:[[0,1.1]],cells:[[-.16,2]],eng:3})},
+ cruiser:{short:'Tuần dương',name:'Tuần dương hạm (Cruiser)',role:'Địch bom',note:'To, chậm, 3 tháp pháo đôi, 1 tầng boong cao.',
+  build:()=>makeShip({L:18,W:4.6,H:1.3,col:0xffd23f,acc:0xfff1a0,tiers:1,tur:[[.36,1.1,2],[.24,1.1,2],[-.44,1.1,2]],br:[-.12,1.3,1.8,2.2],rad:[[-.12,1.1]],eng:3,es:1.1})},
+ dreadnought:{short:'Thiết giáp',name:'Thiết giáp hạm (Dreadnought)',role:'Boss',note:'Rất lớn, 2 tầng boong, 3 tháp pháo ba nòng, pháo phụ, lõi năng lượng ở đuôi.',
+  build:()=>makeShip({L:30,W:8,H:2.2,col:0xff4d6d,acc:0xffaa66,tiers:2,tur:[[.36,1.6,3],[.24,1.5,3],[-.44,1.5,3],[.05,.8,1,2,3.74],[.05,.8,1,-2,3.74]],br:[-.1,1.8,2.2,3],rad:[[-.1,1.2]],cells:[[-.06,6,.38]],core:1.3,eng:4,es:1.6})}
+};
+
+// ===== Hằng số chỉnh game =====
+const C={RANGE:65,ERANGE:55,DODGE:.5,AIMERR:.08,ASSIST:.3,BOOST:1.8,BOOST_T:1.2,BOOST_CD:4,DIF0:.5,DIFSTEP:.07,DIFMAX:1.25};
+// Độ khó theo đợt: hệ số nhân tốc độ, độ nhạy quay, nhịp bắn, khả năng né đạn và độ chính xác của địch. Đợt 1 = 57%, đợt 10 = 120%, tối đa 125%. Chỉnh DIF0 (khởi điểm), DIFSTEP (tăng mỗi đợt), DIFMAX (trần).
+const dif=()=>Math.min(C.DIFMAX,C.DIF0+wave*C.DIFSTEP);
+const ARENA=120;                                            // bán kính vùng chiến đấu (hình cầu)
+const LEN={destroyer:14,corvette:8,frigate:12,cruiser:18,dreadnought:30},SC={destroyer:.42,corvette:.46,frigate:.42,cruiser:.4,dreadnought:.5};
+// Người chơi: hp máu, sp tốc độ tối đa, turn tốc độ quay mũi, fire nhịp bắn(giây), dmg sát thương
+const PS={destroyer:{hp:120,sp:20,turn:3,fire:.45,dmg:7},corvette:{hp:70,sp:28,turn:4.2,fire:.35,dmg:5},frigate:{hp:110,sp:18,turn:3,fire:.3,dmg:5},cruiser:{hp:220,sp:13,turn:2,fire:.6,dmg:11},dreadnought:{hp:400,sp:9,turn:1.3,fire:.8,dmg:16}};
+// Địch: R khoảng cách chiến đấu ưa thích
+const ES={corvette:{hp:30,sp:17,turn:2.6,R:9,fire:1.4,dmg:4},frigate:{hp:70,sp:12,turn:1.9,R:26,fire:1,dmg:5},cruiser:{hp:170,sp:8,turn:1.2,R:34,fire:1.2,dmg:8},dreadnought:{hp:650,sp:6,turn:.7,R:40,fire:.7,dmg:9}};
+const $=id=>document.getElementById(id),V=(x=0,y=0,z=0)=>new THREE.Vector3(x,y,z),TAU=Math.PI*2;
+const wrap=a=>{while(a>Math.PI)a-=TAU;while(a<-Math.PI)a+=TAU;return a},yawOf=(dx,dz)=>Math.atan2(-dx,-dz),cl=(a,m)=>Math.max(-m,Math.min(m,a));
+let AC;function sfx(f,d=.08,ty='square',v=.04,sl=1){try{AC=AC||new AudioContext();const o=AC.createOscillator(),g=AC.createGain(),n=AC.currentTime;o.type=ty;o.frequency.setValueAtTime(f,n);o.frequency.exponentialRampToValueAtTime(Math.max(30,f*sl),n+d);g.gain.setValueAtTime(v,n);g.gain.exponentialRampToValueAtTime(.001,n+d);o.connect(g);g.connect(AC.destination);o.start();o.stop(n+d)}catch(e){}}
+
+// ===== Cảnh và môi trường vũ trụ: tinh vân, mặt trời, hành tinh, bụi, mảnh vỡ =====
+const R=new THREE.WebGLRenderer({canvas:$('c'),antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x02030a);
+const cam=new THREE.PerspectiveCamera(62,1,.1,3000);
+function rs(){R.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}addEventListener('resize',rs);rs();
+scene.add(new THREE.AmbientLight(0x6070a0,.6));const dl=new THREE.DirectionalLight(0xfff0d0,1.7);dl.position.set(60,25,-75);scene.add(dl);
+scene.add(new THREE.Mesh(new THREE.IcosahedronGeometry(ARENA,3),new THREE.MeshBasicMaterial({color:0x2a3a8a,wireframe:true,transparent:true,opacity:.1})));   // ranh giới vùng chiến đấu
+function cv(w,h){const c=document.createElement('canvas');c.width=w;c.height=h;return c}
+const skyTex=(()=>{const c=cv(1024,512),x=c.getContext('2d');x.fillStyle='#02030a';x.fillRect(0,0,1024,512);x.globalCompositeOperation='lighter';
+ for(let i=0;i<16;i++){const px=Math.random()*1024,py=80+Math.random()*350,r=70+Math.random()*150,g=x.createRadialGradient(px,py,0,px,py,r),h=[270,200,320,180][i%4];g.addColorStop(0,'hsla('+h+',80%,45%,.22)');g.addColorStop(1,'hsla('+h+',80%,30%,0)');x.fillStyle=g;x.fillRect(px-r,py-r,r*2,r*2)}
+ for(let i=0;i<2200;i++){x.fillStyle='rgba(255,255,255,'+(.2+Math.random()*.8)+')';const z=Math.random()<.04?2:1;x.fillRect(Math.random()*1024,Math.random()*512,z,z)}
+ return new THREE.CanvasTexture(c)})();
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(1500,32,16),new THREE.MeshBasicMaterial({map:skyTex,side:THREE.BackSide,fog:false})));
+const sunTex=(()=>{const c=cv(256,256),x=c.getContext('2d'),g=x.createRadialGradient(128,128,0,128,128,128);g.addColorStop(0,'#fff');g.addColorStop(.12,'#fff4c8');g.addColorStop(.4,'rgba(255,170,60,.35)');g.addColorStop(1,'rgba(255,120,0,0)');x.fillStyle=g;x.fillRect(0,0,256,256);return new THREE.CanvasTexture(c)})();
+const sun=new THREE.Sprite(new THREE.SpriteMaterial({map:sunTex,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));sun.position.set(.6,.25,-.75).normalize().multiplyScalar(1200);sun.scale.setScalar(420);scene.add(sun);
+const plTex=(()=>{const c=cv(512,256),x=c.getContext('2d');for(let y=0;y<256;y++){x.fillStyle='hsl('+(20+Math.sin(y*.09)*18)+','+(45+Math.sin(y*.2)*15)+'%,'+(38+Math.sin(y*.13)*12)+'%)';x.fillRect(0,y,512,1)}return new THREE.CanvasTexture(c)})();
+const planet=new THREE.Mesh(new THREE.SphereGeometry(180,48,32),new THREE.MeshStandardMaterial({map:plTex,roughness:1}));planet.position.set(-420,90,-760);scene.add(planet);
+const atm=new THREE.Mesh(new THREE.SphereGeometry(190,48,32),new THREE.MeshBasicMaterial({color:0xffa060,transparent:true,opacity:.14,side:THREE.BackSide,blending:THREE.AdditiveBlending,depthWrite:false}));atm.position.copy(planet.position);scene.add(atm);
+const moon=new THREE.Mesh(new THREE.SphereGeometry(40,24,16),new THREE.MeshStandardMaterial({color:0x9a9aa8,roughness:1}));moon.position.set(520,-30,-620);scene.add(moon);
+const DN=700,dp=new Float32Array(DN*3);for(let i=0;i<DN*3;i++)dp[i]=(Math.random()-.5)*80;   // bụi vũ trụ bay quanh camera: cảm nhận tốc độ
+const dg=new THREE.BufferGeometry();dg.setAttribute('position',new THREE.BufferAttribute(dp,3));const dust=new THREE.Points(dg,new THREE.PointsMaterial({color:0x9fb4ff,size:.18,transparent:true,opacity:.7,fog:false}));dust.frustumCulled=false;scene.add(dust);
+// Thiên thạch lớn trong vùng chiến đấu (chặn đạn, chặn tàu, làm chỗ nấp) + mảnh vỡ trang trí bên ngoài
+const RK=[],DB=[],rg=new THREE.IcosahedronGeometry(1,1),rmat=new THREE.MeshStandardMaterial({color:0x8a7f9a,roughness:.9,flatShading:true}),rnd=()=>V(Math.random()-.5,Math.random()-.5,Math.random()-.5);
+for(let i=0;i<18;i++){const r=3+Math.random()*5,p=rnd().normalize().multiplyScalar(25+Math.random()*70),m=new THREE.Mesh(rg,rmat);m.scale.set(r,r*.85,r);m.position.copy(p);scene.add(m);RK.push({p,r:r*.95,m})}
+for(let i=0;i<70;i++){const m=new THREE.Mesh(rg,rmat);m.scale.setScalar(.6+Math.random()*5);m.position.copy(rnd().normalize().multiplyScalar(ARENA+10+Math.random()*160));scene.add(m);DB.push({m,sp:rnd().multiplyScalar(.4)})}
+const bg=new THREE.SphereGeometry(.2,8,8),pg=new THREE.BoxGeometry(.3,.3,.3),bas={},basic=c=>bas[c]||(bas[c]=new THREE.MeshBasicMaterial({color:c}));
+
+// ===== Trạng thái =====
+let state='menu',P,E=[],BL=[],PA=[],PU=[],wave=0,score=0,t=0,wait=0,shake=0,bt,cy=0,cp=.2,fp=false,dist=16,drag=false,lx=0,ly=0;const keys={};
+function burst(p,c,n=10,s=9){if(PA.length>350)return;for(let i=0;i<n;i++){const m=new THREE.Mesh(pg,basic(c));m.position.copy(p);scene.add(m);PA.push({m,v:rnd().normalize().multiplyScalar(s*(.3+Math.random())),l:.7})}}
+function banner(s,ms=1800){const b=$('bn');b.textContent=s;b.style.opacity=1;clearTimeout(bt);bt=setTimeout(()=>b.style.opacity=0,ms)}
+
+// ===== Tàu 3D: pivot xoay theo thứ tự YXZ (yaw quanh Y, pitch ngóc/chúi), mũi tàu hướng -Z =====
+function mkShip(key,pos,st,team,hpMul=1){const model=SHIPS[key].build();model.scale.setScalar(SC[key]);const p=new THREE.Group();p.rotation.order='YXZ';p.add(model);p.position.copy(pos);scene.add(p);
+ const hp=Math.round(st.hp*hpMul);return {p,m:model,key,team,st,hp,mx:hp,r:LEN[key]*SC[key]*.3,yaw:0,pit:0,tr:0,v:V(),cd:Math.random(),tur:model.userData.tur,od:0,bc:0,bt:0,dir:Math.random()<.5?-1:1,mt:2,mode:0,m2:0,ax:rnd().normalize(),dg:Math.random()}}
+const orient=s=>s.p.rotation.set(s.pit,s.yaw,0,'YXZ'),fwd=(y,p)=>V(-Math.sin(y)*Math.cos(p),Math.sin(p),-Math.cos(y)*Math.cos(p));
+function collide(s,all){const q=s.p.position;
+ for(const k of RK){const d=q.clone().sub(k.p),l=d.length(),m=k.r+s.r;if(l<m&&l>.01){q.copy(k.p).addScaledVector(d,m/l);s.v.multiplyScalar(.92)}}
+ for(const o of all)if(o!==s){const d=q.clone().sub(o.p.position),l=d.length(),m=s.r+o.r;if(l<m&&l>.01)q.addScaledVector(d,(m-l)*.5/l)}
+ const l=q.length();if(l>ARENA-4){q.multiplyScalar((ARENA-4)/l);const n=q.clone().normalize(),vo=s.v.dot(n);if(vo>0)s.v.addScaledVector(n,-vo)}}
+// Tháp pháo quay về mục tiêu, bắn khi có lệnh (trig). Không có mục tiêu thì bắn theo hướng nhìn (dv)
+function aimFire(s,tg,dt,trig,dv){s.cd-=dt;const wp=V();let fired=false;
+ for(const th of s.tur){th.getWorldPosition(wp);const rel=tg?wrap(yawOf(tg.p.position.x-wp.x,tg.p.position.z-wp.z)-s.yaw):0;
+  th.rotation.y+=wrap(rel-th.rotation.y)*Math.min(1,dt*10);
+  if(trig&&s.cd<=0&&Math.abs(wrap(rel-th.rotation.y))<.4){fire(wp,s,tg,dv);fired=true}}
+ if(fired){s.cd=s.st.fire/(s.od>0?2:1)/(s.team==='e'?Math.min(1.2,dif()):1);if(s===P)sfx(520,.05,'square',.02,.5)}}
+function fire(wp,s,tg,dv){const sp=s.team==='p'?70:40*(.75+.25*Math.min(1,dif())),er=s.team==='p'?.02:C.AIMERR*(2-Math.min(1,dif()));let dir;
+ if(tg){const q=tg.p.position;dir=q.clone().addScaledVector(tg.v,q.distanceTo(wp)/sp*(s.team==='p'?1:.8)).sub(wp).normalize()}else dir=dv.clone();
+ dir.add(rnd().multiplyScalar(er*2)).normalize();
+ const m=new THREE.Mesh(bg,basic(s.team==='p'?0xffe14f:0xff4d6d));m.scale.set(1,1,5);m.position.copy(wp);m.lookAt(wp.clone().add(dir));scene.add(m);BL.push({m,v:dir.multiplyScalar(sp),l:1.8,dmg:s.st.dmg,own:s.team})}
+function hit(s,d){burst(s.p.position,0xffe14f,4,6);
+ if(s===P){if(state!=='play')return;P.hp-=d;shake=.5;sfx(120,.2,'sawtooth',.06,.5);if(P.hp<=0)over()}
+ else{s.hp-=d;if(s.hp<=0)kill(s)}}
+function kill(s){burst(s.p.position,0xffa24d,s.key==='dreadnought'?60:24,13);sfx(100,.4,'sawtooth',.07,.4);shake=Math.max(shake,s.key==='dreadnought'?1.2:.4);
+ score+=({corvette:100,frigate:200,cruiser:400,dreadnought:1500})[s.key];scene.remove(s.p);E.splice(E.indexOf(s),1);
+ if(Math.random()<.3||s.key==='dreadnought'){const k=Math.random()<.5?'heal':'od',m=new THREE.Mesh(new THREE.OctahedronGeometry(.9),basic(k==='heal'?0x5dff8a:0xffd23f));m.position.copy(s.p.position);scene.add(m);PU.push({m,k,l:15})}}
+
+// ===== AI địch 3D: giữ khoảng cách, đi vòng cung quanh người chơi theo trục ngẫu nhiên, né đạn, tránh đá, rút lui khi sắp chết =====
+function ai(e,dt,all){const pp=P.p.position,q=e.p.position,away=q.clone().sub(pp),d=away.length()||1,R=e.st.R;const df=dif();let tg,sp=e.st.sp*df;
+ e.mt-=dt;if(e.mt<=0){e.dir*=-1;e.mt=2+Math.random()*3;e.ax=rnd().normalize()}
+ if(e.hp<e.mx*.25&&e.key!=='dreadnought')tg=q.clone().add(away);
+ else if(e.key==='corvette'){e.m2-=dt;if(e.mode===0&&d<R+3){e.mode=1;e.m2=2.2}if(e.mode===1){tg=q.clone().add(away);if(e.m2<=0)e.mode=0}else tg=pp.clone().addScaledVector(P.v,d/sp*.6)}   // lao vào rồi rút
+ else{const u=away.clone().normalize(),tn=V().crossVectors(u,e.ax).normalize().multiplyScalar(e.dir*.55);tg=pp.clone().addScaledVector(u.add(tn).normalize(),R);if(d>R*1.6)sp*=1.15}       // vòng cung 3D
+ const dir=tg.sub(q).normalize();
+ for(const k of RK){const o=q.clone().sub(k.p),od=o.length(),rr=k.r+e.r+8;if(od<rr)dir.addScaledVector(o,(1-od/rr)*2.5/od)}
+ for(const o of all)if(o!==e){const w=q.clone().sub(o.p.position),od=w.length(),rr=e.r+o.r+4;if(od<rr&&od>.01)dir.addScaledVector(w,(1-od/rr)*1.5/od)}
+ if(e.dg<C.DODGE*df)for(const b of BL)if(b.own==='p'){const w=q.clone().sub(b.m.position),od=w.length();if(od<20&&od>.5&&w.dot(b.v)/(od*70)>.85)dir.addScaledVector(V().crossVectors(b.v,e.ax).normalize(),1.6)}
+ dir.normalize().multiplyScalar(sp);e.v.add(dir.sub(e.v).clampLength(0,sp*2.2*dt));q.addScaledVector(e.v,dt);
+ const l=e.v.length();if(l>1){const lm=e.st.turn*1.6*df*dt,st=cl(wrap(yawOf(e.v.x,e.v.z)-e.yaw),lm);e.yaw+=st;e.tr+=(st/dt-e.tr)*Math.min(1,dt*6);e.pit+=(Math.asin(e.v.y/l)-e.pit)*Math.min(1,dt*3)}
+ e.m.rotation.z=-e.tr*.1;orient(e);aimFire(e,P,dt,d<C.ERANGE,null)}
+
+// ===== Đợt địch, vòng đời =====
+function nextWave(){wave++;const boss=wave%5===0,n=Math.min(2+wave,9),list=[];
+ if(boss)list.push('dreadnought','frigate','frigate');else for(let i=0;i<n;i++)list.push(wave>=3&&Math.random()<.2?'cruiser':wave>=2&&Math.random()<.45?'frigate':'corvette');
+ for(const k of list){const dir=V(Math.random()-.5,(Math.random()-.5)*.7,Math.random()-.5).normalize(),m=mkShip(k,dir.clone().multiplyScalar(ARENA*.85),ES[k],'e',1+wave*.06);m.v.copy(dir).multiplyScalar(-m.st.sp*.5);E.push(m)}
+ banner(boss?'BOSS – ĐỢT '+wave:'ĐỢT '+wave)}
+function start(key){[P,...E].forEach(s=>{if(s)scene.remove(s.p)});E=[];BL.forEach(b=>scene.remove(b.m));BL=[];PU.forEach(u=>scene.remove(u.m));PU=[];
+ P=mkShip(key,V(0,0,0),PS[key],'p');cy=0;cp=.2;P.m.visible=!fp;dist=Math.max(11,P.r*6.5);wave=0;score=0;wait=1;state='play';$('ov').style.display='none'}
+function over(){state='over';burst(P.p.position,0xffaa44,60,15);scene.remove(P.p);sfx(80,.8,'sawtooth',.1,.3);document.exitPointerLock&&document.exitPointerLock();
+ $('t1').textContent='Hạm đội bị đánh chìm';$('t2').textContent='Điểm: '+score+' – Đợt: '+wave+'. Chọn tàu để chơi lại:';$('ov').style.display='flex'}
+function boost(){if(state!=='play'||P.bc>0)return;P.bt=C.BOOST_T;P.bc=C.BOOST_CD;sfx(300,.3,'sawtooth',.05,3);burst(P.p.position,0x66ccff,14,12)}
+for(const k in PS){const b=document.createElement('button'),s=PS[k];b.innerHTML=SHIPS[k].name+'<br>Máu '+s.hp+' · Tốc độ '+s.sp+' · Sát thương '+s.dmg;b.onclick=()=>{sfx(500,.1);start(k)};$('sel').appendChild(b)}
+
+// ===== Điều khiển: chuột chỉ để nhìn; WASD + Space/C để bay; Enter để bắn =====
+function look(dx,dy){cy-=dx*.0024;cp=Math.max(-1.4,Math.min(1.4,cp-dy*.0024))}
+addEventListener('pointerdown',e=>{if(e.target.tagName==='BUTTON'||state!=='play')return;drag=true;lx=e.clientX;ly=e.clientY;if(e.pointerType==='mouse'&&!document.pointerLockElement)try{$('c').requestPointerLock()}catch(x){}});
+addEventListener('pointermove',e=>{if(state!=='play')return;if(document.pointerLockElement)look(e.movementX||0,e.movementY||0);else if(drag){look(e.clientX-lx,e.clientY-ly);lx=e.clientX;ly=e.clientY}});
+addEventListener('pointerup',()=>drag=false);
+addEventListener('wheel',e=>{dist=Math.max(7,Math.min(40,dist*(1+e.deltaY*.001)))},{passive:true});
+addEventListener('keydown',e=>{if(state==='play'&&e.code==='Space')e.preventDefault();keys[e.code]=1;if(e.key==='Shift')boost();
+ if(e.code==='KeyV'&&P){fp=!fp;P.m.visible=!fp;$('ck').style.display=fp?'block':'none';banner(fp?'GÓC NHÌN BUỒNG LÁI':'GÓC NHÌN NGOÀI TÀU',900)}});
+addEventListener('keyup',e=>keys[e.code]=0);
+
+// ===== HUD 2D: tâm ngắm, khung địch (khoảng cách, máu), mũi tên địch ngoài màn hình =====
+const hc=$('hud2'),hx=hc.getContext('2d'),mm=$('mm').getContext('2d'),pv=V();
+function drawHud(){const dpr=Math.min(devicePixelRatio,2),W=innerWidth,H=innerHeight;if(hc.width!==Math.round(W*dpr)){hc.width=Math.round(W*dpr);hc.height=Math.round(H*dpr)}hx.setTransform(dpr,0,0,dpr,0,0);hx.clearRect(0,0,W,H);
+ if(state!=='play')return;const cx=W/2,cyy=H/2;hx.strokeStyle='#6fe8ff';hx.lineWidth=2;hx.beginPath();hx.arc(cx,cyy,fp?16:10,0,TAU);
+ for(const [a,b] of [[-24,-8],[8,24]]){hx.moveTo(cx+a,cyy);hx.lineTo(cx+b,cyy);hx.moveTo(cx,cyy+a);hx.lineTo(cx,cyy+b)}hx.stroke();
+ for(const e of E){pv.copy(e.p.position);const dd=Math.round(pv.distanceTo(cam.position)),ll=P.lock===e;pv.project(cam);
+  let x=pv.x,y=pv.y;if(pv.z>1){x=-x;y=-y}const on=pv.z<1&&Math.abs(x)<.94&&Math.abs(y)<.9;hx.strokeStyle=hx.fillStyle=ll?'#ffe14f':'#ff4d6d';
+  if(on){const sx=(x+1)/2*W,sy=(1-y)/2*H,s=Math.max(14,Math.min(60,e.r*260/Math.max(dd,1)));hx.lineWidth=ll?3:1.5;hx.strokeRect(sx-s,sy-s,s*2,s*2);hx.font='12px sans-serif';hx.textAlign='center';hx.fillText(dd+' m',sx,sy+s+14);hx.fillRect(sx-s,sy-s-8,s*2*Math.max(0,e.hp/e.mx),4)}
+  else{const dx=x*cx,dy=-y*cyy,k=Math.min((cx-30)/Math.max(Math.abs(dx),1e-3),(cyy-30)/Math.max(Math.abs(dy),1e-3));hx.save();hx.translate(cx+dx*k,cyy+dy*k);hx.rotate(Math.atan2(dy,dx));hx.beginPath();hx.moveTo(10,0);hx.lineTo(-8,-7);hx.lineTo(-8,7);hx.fill();hx.restore()}}}
+// Radar quanh tàu: lên trên = hướng nhìn; vạch dọc cạnh chấm = địch cao hơn hoặc thấp hơn bạn
+function drawRadar(){mm.clearRect(0,0,140,140);const pp=P.p.position,k=62/110,c=Math.cos(cy),s=Math.sin(cy);
+ for(const e of E){const dx=e.p.position.x-pp.x,dz=e.p.position.z-pp.z,dy=e.p.position.y-pp.y;let rx=(dx*c-dz*s)*k,rz=(dx*s+dz*c)*k;const l=Math.hypot(rx,rz),out=l>60;if(out){rx*=60/l;rz*=60/l}
+  mm.strokeStyle=mm.fillStyle=e.key==='dreadnought'?'#ff4d6d':e.key==='cruiser'?'#ffd23f':e.key==='frigate'?'#b085ff':'#ff9a3d';
+  mm.beginPath();mm.moveTo(70+rx,70+rz);mm.lineTo(70+rx,70+rz-cl(dy*.25,16));mm.stroke();mm.beginPath();mm.arc(70+rx,70+rz,e.key==='dreadnought'?5:3,0,TAU);out?mm.stroke():mm.fill()}
+ mm.fillStyle='#6fe8ff';mm.beginPath();mm.moveTo(70,62);mm.lineTo(65,76);mm.lineTo(75,76);mm.fill()}
+
+// ===== Vòng lặp =====
+function anim(s){const u=s.m.userData;u.rad.forEach(r=>r.rotation.y=t*2);u.fl.forEach(f=>f.scale.set(1,(.4+Math.min(1,s.v.length()/s.st.sp)*.9)*(.8+Math.random()*.4),1));u.lt.forEach((l,i)=>l.visible=Math.floor(t*2+i)%2===0);if(u.core)u.core.scale.setScalar(u.cs*(1+Math.sin(t*3)*.12))}
+function update(dt){
+ for(let i=PA.length-1;i>=0;i--){const p=PA[i];p.l-=dt;p.m.position.addScaledVector(p.v,dt);p.m.scale.setScalar(Math.max(p.l/.7,.01));if(p.l<=0){scene.remove(p.m);PA.splice(i,1)}}
+ shake=Math.max(0,shake-dt*2.5);DB.forEach(o=>{o.m.rotation.x+=o.sp.x*dt;o.m.rotation.y+=o.sp.y*dt});
+ if(state==='menu'||!P){cam.position.set(Math.sin(t*.1)*70,25,Math.cos(t*.1)*70);cam.lookAt(0,0,0);return}
+ const pp=P.p.position,dv=fwd(cy,cp);
+ if(state==='play'){
+  P.bc=Math.max(0,P.bc-dt);P.bt=Math.max(0,P.bt-dt);P.od=Math.max(0,P.od-dt);
+  // Bay 6 hướng có quán tính: W/S theo mũi tàu, A/D đi ngang, Space lên, C xuống
+  const k=n=>keys[n]?1:0,bst=P.bt>0?C.BOOST:1,rt=V(Math.cos(P.yaw),0,-Math.sin(P.yaw)),
+   ac=fwd(P.yaw,P.pit).multiplyScalar(k('KeyW')-.6*k('KeyS')).addScaledVector(rt,.7*(k('KeyD')-k('KeyA'))).add(V(0,.8*(k('Space')-k('KeyC')),0));
+  P.v.addScaledVector(ac,P.st.sp*1.8*bst*dt).multiplyScalar(Math.max(0,1-dt*1.1));if(P.v.length()>P.st.sp*bst)P.v.setLength(P.st.sp*bst);pp.addScaledVector(P.v,dt);
+  const tl=P.st.turn*dt*(P.bt>0?1.5:1);P.yaw+=cl(wrap(cy-P.yaw),tl);P.pit+=cl(cp-P.pit,tl);P.m.rotation.z=-P.v.dot(rt)*.04;orient(P);   // mũi tàu tự quay theo hướng nhìn
+  if(Math.random()<.7)burst(pp.clone().addScaledVector(fwd(P.yaw,P.pit),-P.r),0x66ccff,1,2);
+  let tg=null,ba=C.ASSIST;for(const e of E){const rel=e.p.position.clone().sub(pp);if(rel.length()>C.RANGE)continue;const a=rel.angleTo(dv);if(a<ba){ba=a;tg=e}}   // hỗ trợ ngắm: địch gần tâm ngắm
+  P.lock=tg;aimFire(P,tg,dt,keys.KeyR,dv);
+  const all=[P,...E];for(const e of [...E])ai(e,dt,all);for(const s of all)collide(s,all);
+  if(!E.length){wait-=dt;if(wait<=0){nextWave();wait=2.5}}
+  for(let i=PU.length-1;i>=0;i--){const u=PU[i];u.m.rotation.y+=3*dt;u.l-=dt;if(u.m.position.distanceTo(pp)<4.5){if(u.k==='heal')P.hp=Math.min(P.mx,P.hp+P.mx*.35);else P.od=8;banner(u.k==='heal'?'SỬA CHỮA':'PHÁO NHANH',900);sfx(880,.2,'sine',.05,2);scene.remove(u.m);PU.splice(i,1)}else if(u.l<=0){scene.remove(u.m);PU.splice(i,1)}}
+  for(let i=BL.length-1;i>=0;i--){const b=BL[i],q=b.m.position;q.addScaledVector(b.v,dt);b.l-=dt;let dead=b.l<=0;
+   for(const r of RK)if(!dead&&q.distanceTo(r.p)<r.r){dead=true;burst(q,0xbbaacc,3,5)}
+   if(!dead)for(const s of (b.own==='p'?E:[P]))if(q.distanceTo(s.p.position)<s.r+.4){dead=true;hit(s,b.dmg);break}
+   if(dead){scene.remove(b.m);BL.splice(i,1)}}
+  for(const s of [P,...E])anim(s);
+  $('sc').textContent='Điểm '+score+'  ·  Đợt '+wave+'  ·  Địch '+E.length;$('hp').style.width=Math.max(0,P.hp/P.mx*100)+'%';
+  $('bf').textContent=Math.round(P.v.length()*4)+' km/s  ·  Độ cao '+Math.round(pp.y)+(P.bc>0?'  ·  Nước rút '+P.bc.toFixed(1)+'s':'  ·  Nước rút sẵn sàng')+(P.od>0?'  ·  Pháo nhanh '+Math.ceil(P.od)+'s':'');
+ }
+ // Camera: góc ngoài (quay quanh tàu, thấy toàn thân) hoặc buồng lái (nhìn bằng mắt người lái)
+ if(fp)cam.position.copy(pp).addScaledVector(fwd(P.yaw,P.pit),P.r*.5).add(V(0,P.r*.45,0));else cam.position.copy(pp).addScaledVector(dv,-dist).add(V(0,2+P.r*.4,0));
+ cam.position.add(rnd().multiplyScalar(shake));cam.lookAt(cam.position.clone().add(dv));
+ cam.fov+=((fp?78:62)+(P.bt>0?12:0)-cam.fov)*Math.min(1,dt*6);cam.updateProjectionMatrix();
+ const dpa=dg.attributes.position.array,cc=cam.position;for(let i=0;i<DN;i++)for(let a=0;a<3;a++){const j=i*3+a,c0=a===0?cc.x:a===1?cc.y:cc.z;dpa[j]=c0+((dpa[j]-c0+40)%80+80)%80-40}dg.attributes.position.needsUpdate=true;
+ if(state==='play'){drawRadar();drawHud()}}
+let last=performance.now();
+function loop(n){requestAnimationFrame(loop);const dt=Math.min((n-last)/1000,.05);last=n;t+=dt;update(dt);R.render(scene,cam)}
+requestAnimationFrame(loop);
+</script></body></html>
