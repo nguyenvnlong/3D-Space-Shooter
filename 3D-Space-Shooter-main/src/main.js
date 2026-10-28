@@ -177,6 +177,15 @@ const SOLO_BALANCE = {
     pickupSpeed: 1.2,
     maxPooledParticles: 72,
 };
+const PLAYER_CURSOR_BALANCE = {
+    followSpeed: 7.8,
+    maxAccel: 28,
+    stopRadius: 0.12,
+    sendRateMs: 50,
+    bankAmount: 0.42,
+    pitchAmount: 0.16,
+};
+
 const SOLO_WAVE_BALANCE = {
     intermission: 1.8,
     enemyHp: 80,
@@ -190,6 +199,18 @@ const SOLO_WAVE_BALANCE = {
     bossHpPerWave: 85,
     maxEnemiesPerWave: 12,
     startingLives: 3,
+};
+const ENEMY_AI_BALANCE = {
+    maxAccel: { scout: 7.5, fighter: 5.8, bomber: 3.2, boss: 5.5 },
+    maxSpeed: { scout: 4.2, fighter: 3.6, bomber: 2.2, boss: 4.3 },
+    reactionBase: 0.24,
+    reactionPerWave: 0.012,
+    dodgeBase: 0.18,
+    dodgePerWave: 0.035,
+    aimErrorBase: 0.5,
+    aimErrorPerWave: 0.018,
+    separationRadius: 2.7,
+    separationStrength: 5.2,
 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -225,6 +246,10 @@ let soloWaveDelay = 0;
 let waveNoticeTimer = 0;
 let waveNoticeEl;
 let playerVelocity = { x: 0, y: 0, z: 0 };
+let playerTarget = { x: 0, y: 0, z: 12, active: false };
+let aimMarkerEl = null;
+const pointerRaycaster = new THREE.Raycaster();
+const pointerNdc = new THREE.Vector2();
 let activeBuffs = { shield: 0, multishot: 0, rapidFire: 0, multishotLevel: 1 };
 let soloPowerups = [];
 let powerupPool = [];
@@ -453,90 +478,213 @@ function createWingGeometry(type) {
     return geometry;
 }
 
-function makeShipMesh(color, forward = -1, archetype = 'fighter') {
-    const type = shipArchetypes[archetype] ? archetype : 'fighter';
-    const group = new THREE.Group();
-    const hull = getShipMaterial(color);
-    const trim = getShipMaterial(color, 'trim');
-    const glass = getShipMaterial(color, 'glass');
-    const bodyGeometry = getShipGeometry('body', () => {
-        const geometry = new THREE.ConeGeometry(0.54, 3.2, 8);
-        geometry.rotateX(-Math.PI / 2);
+function createNavalHullGeometry(length, width, height) {
+    const key = `naval-hull:${length}:${width}:${height}`;
+    return getShipGeometry(key, () => {
+        const bow = length * 0.52;
+        const stern = length * 0.42;
+        const vertices = new Float32Array([
+            -width * 0.2, height * 0.15, -bow, width * 0.2, height * 0.15, -bow,
+            -width * 0.5, height * 0.05, -length * 0.12, width * 0.5, height * 0.05, -length * 0.12,
+            -width * 0.5, height * 0.05, stern, width * 0.5, height * 0.05, stern,
+            -width * 0.2, height * 0.15, -bow, width * 0.2, height * 0.15, -bow,
+            -width * 0.5, -height * 0.45, -length * 0.12, width * 0.5, -height * 0.45, -length * 0.12,
+            -width * 0.5, -height * 0.45, stern, width * 0.5, -height * 0.45, stern,
+        ]);
+        const indices = [
+            0, 2, 1, 1, 2, 3, 1, 3, 7, 3, 5, 7,
+            0, 4, 2, 2, 4, 6, 0, 1, 4, 1, 5, 4,
+            2, 6, 3, 3, 6, 5, 3, 5, 9, 5, 11, 9,
+            4, 5, 6, 5, 7, 6, 8, 9, 10, 9, 11, 10
+        ];
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        geometry.setIndex(indices);
+        geometry.computeVertexNormals();
         return geometry;
     });
-    const wingGeometry = getShipGeometry(`wing:${type}`, () => createWingGeometry(type));
-    const tailGeometry = getShipGeometry('tail', () => new THREE.ConeGeometry(0.28, 1, 4));
-    const cockpitGeometry = getShipGeometry('cockpit', () => new THREE.SphereGeometry(0.42, 12, 10));
-    const engineGeometry = getShipGeometry('engine', () => new THREE.CylinderGeometry(0.15, 0.2, 0.42, 8));
-    const flameGeometry = getShipGeometry('flame', () => new THREE.ConeGeometry(0.14, 0.8, 8));
-    const signalGeometry = getShipGeometry('signal', () => new THREE.SphereGeometry(0.09, 8, 6));
+}
+
+function addNavalBox(group, size, position, material) {
+    const key = `box:${size.join(':')}`;
+    const geometry = getShipGeometry(key, () => new THREE.BoxGeometry(size[0], size[1], size[2], 1, 1, 1));
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(position[0], position[1], position[2]);
+    group.add(mesh);
+    return mesh;
+}
+
+function addNavalTurret(group, position, barrelColor, barrelCount = 1, turretRadius = 0.28, barrelLength = 1.05, visual = null) {
+    const baseGeometry = getShipGeometry(`turret-base:${turretRadius}`, () => new THREE.CylinderGeometry(turretRadius, turretRadius * 1.18, 0.22, 10));
+    const barrelGeometry = getShipGeometry(`turret-barrel:${barrelLength}:${barrelCount}`, () => new THREE.CylinderGeometry(0.055, 0.075, barrelLength, 8));
+    const turret = new THREE.Group();
+    turret.position.set(position[0], position[1], position[2]);
+    const base = new THREE.Mesh(baseGeometry, getShipMaterial(barrelColor));
+    base.position.y = 0.11;
+    turret.add(base);
+    for (let index = 0; index < barrelCount; index++) {
+        const barrel = new THREE.Mesh(barrelGeometry, getShipMaterial(barrelColor, 'trim'));
+        barrel.rotation.x = Math.PI / 2;
+        barrel.position.set((index - (barrelCount - 1) / 2) * 0.13, 0.28, -barrelLength * 0.42);
+        turret.add(barrel);
+    }
+    group.add(turret);
+    if (visual) visual.turrets.push(turret);
+    return turret;
+}
+
+function addNavalBridge(group, color, position, width, height, visual) {
+    addNavalBox(group, [width, height, 0.58], position, getShipMaterial(color, 'trim'));
+    addNavalBox(group, [width * 1.08, height * 0.24, 0.62], [position[0], position[1] + height * 0.62, position[2]], getShipMaterial(color));
+    const windowCount = 5;
+    for (let index = 0; index < windowCount; index++) {
+        addNavalBox(group, [width * 0.11, 0.09, 0.025], [position[0] - width * 0.38 + index * width * 0.19, position[1] + height * 0.62, position[2] - 0.32], getShipMaterial(0x75dfff, 'glass'));
+    }
+    addNavalBox(group, [width * 0.12, height * 0.75, width * 0.12], [position[0], position[1] + height + 0.22, position[2] + 0.04], getShipMaterial(color));
+    const radar = new THREE.Mesh(getShipGeometry('naval-radar', () => new THREE.CylinderGeometry(width * 0.46, width * 0.46, 0.025, 18)), getShipMaterial(0x9deaff, 'glass'));
+    radar.position.set(position[0], position[1] + height * 1.15, position[2] + 0.05);
+    group.add(radar);
+    if (visual) visual.radars.push(radar);
+}
+
+function addNavalEngines(group, color, positions, visual) {
+    const engineGeometry = getShipGeometry('naval-engine', () => new THREE.CylinderGeometry(0.16, 0.21, 0.38, 10));
+    const flameGeometry = getShipGeometry('naval-flame', () => new THREE.ConeGeometry(0.15, 0.85, 8));
     const flameMaterial = getShipMaterial(0xff8a35, 'flame');
-    const signalMaterial = getShipMaterial(0x73ffe0, 'signal');
-
-    const body = new THREE.Mesh(bodyGeometry, hull);
-    body.position.z = -0.05;
-    group.add(body);
-
-    const leftWing = new THREE.Mesh(wingGeometry, hull);
-    const rightWing = new THREE.Mesh(wingGeometry, hull);
-    rightWing.scale.x = -1;
-    group.add(leftWing, rightWing);
-
-    const cockpit = new THREE.Mesh(cockpitGeometry, glass);
-    cockpit.scale.set(0.72, 0.68, 1.25);
-    cockpit.position.set(0, 0.31, -0.34);
-    group.add(cockpit);
-
-    const tail = new THREE.Mesh(tailGeometry, trim);
-    tail.rotation.x = Math.PI / 2;
-    tail.position.set(0, 0.12, 1.05);
-    tail.scale.set(0.72, 0.78, 0.7);
-    group.add(tail);
-
-    const flames = [];
-    for (const side of [-1, 1]) {
-        const engine = new THREE.Mesh(engineGeometry, trim);
+    positions.forEach(([x, y, z]) => {
+        const engine = new THREE.Mesh(engineGeometry, getShipMaterial(color, 'trim'));
         engine.rotation.x = Math.PI / 2;
-        engine.position.set(side * 0.42, -0.02, 0.96);
+        engine.position.set(x, y, z);
         group.add(engine);
-
         const flame = new THREE.Mesh(flameGeometry, flameMaterial);
         flame.rotation.x = Math.PI / 2;
-        flame.position.set(side * 0.42, -0.02, 1.53);
+        flame.position.set(x, y, z + 0.58);
         group.add(flame);
-        flames.push(flame);
+        visual.flames.push(flame);
+    });
+}
 
-        const signal = new THREE.Mesh(signalGeometry, signalMaterial);
-        signal.position.set(side * (shipArchetypes[type].span * 0.86), 0.04, 0.36);
-        group.add(signal);
-    }
+function addNavigationLights(group, length, width, visual) {
+    const geometry = getShipGeometry('navigation-light', () => new THREE.SphereGeometry(0.075, 8, 6));
+    const red = new THREE.Mesh(geometry, getShipMaterial(0xff4b55, 'signal'));
+    const green = new THREE.Mesh(geometry, getShipMaterial(0x5cff8c, 'signal'));
+    red.position.set(-width * 0.52, 0.18, -length * 0.12);
+    green.position.set(width * 0.52, 0.18, -length * 0.12);
+    group.add(red, green);
+    visual.navigationLights.push(red, green);
+}
 
-    group.scale.setScalar(shipArchetypes[type].scale);
+function finalizeNavalShip(group, archetype, forward, visual) {
+    group.scale.setScalar(shipArchetypes[archetype].scale);
     if (forward > 0) group.rotation.y = Math.PI;
-    group.userData = { archetype: type, flames, trailTimer: Math.random() * 0.12 };
+    visual.archetype = archetype;
+    visual.trailTimer = Math.random() * 0.12;
+    group.userData = visual;
     shipVisuals.push(group);
     return group;
 }
 
-function makeBossMesh() {
-    const group = makeShipMesh(0xe3424c, 1, 'bomber');
-    group.scale.multiplyScalar(1.75);
-    const cannonGeometry = getShipGeometry('boss-cannon', () => new THREE.CylinderGeometry(0.24, 0.34, 1.65, 10));
-    const cannonMaterial = getShipMaterial(0x8f2734, 'cannon');
-    const coreGeometry = getShipGeometry('boss-core', () => new THREE.SphereGeometry(0.68, 16, 12));
-    const coreMaterial = getShipMaterial(0xff5a42, 'core');
+function makeDestroyer(color = 0x72b9d8, forward = -1) {
+    // Khu trục hạm: thân dài cân đối, hai tháp pháo và bridge trung tâm.
+    const dimensions = { length: 4.8, width: 1.5, height: 0.5 };
+    const group = new THREE.Group();
+    const visual = { flames: [], radars: [], turrets: [], navigationLights: [], core: null };
+    const hull = new THREE.Mesh(createNavalHullGeometry(dimensions.length, dimensions.width, dimensions.height), getShipMaterial(color));
+    group.add(hull);
+    addNavalBox(group, [dimensions.width * 0.82, 0.12, dimensions.length * 0.58], [0, 0.32, 0.18], getShipMaterial(color, 'trim'));
+    addNavalBridge(group, color, [0, 0.42, 0.45], 0.72, 0.48, visual);
+    addNavalTurret(group, [0, 0.48, -1.55], color, 2, 0.34, 1.2, visual);
+    addNavalTurret(group, [0, 0.42, 1.55], color, 2, 0.34, 1.1, visual);
+    for (const x of [-0.4, 0.4]) addNavalBox(group, [0.22, 0.16, 0.32], [x, 0.48, -0.22], getShipMaterial(color, 'trim'));
+    addNavalEngines(group, color, [[-0.38, 0, dimensions.length * 0.43], [0.38, 0, dimensions.length * 0.43]], visual);
+    addNavigationLights(group, dimensions.length, dimensions.width, visual);
+    return finalizeNavalShip(group, 'player', forward, visual);
+}
+
+function makeCorvette(color = 0xff873f, forward = 1) {
+    // Corvette hộ tống ngắn: mũi sắc, nhẹ, một tháp pháo và radar nhỏ.
+    const dimensions = { length: 3.3, width: 1.05, height: 0.42 };
+    const group = new THREE.Group();
+    const visual = { flames: [], radars: [], turrets: [], navigationLights: [], core: null };
+    group.add(new THREE.Mesh(createNavalHullGeometry(dimensions.length, dimensions.width, dimensions.height), getShipMaterial(color)));
+    addNavalBox(group, [0.75, 0.1, 1.65], [0, 0.3, 0.15], getShipMaterial(color, 'trim'));
+    addNavalBridge(group, color, [0, 0.36, 0.35], 0.48, 0.38, visual);
+    addNavalTurret(group, [0, 0.42, -1.05], color, 1, 0.25, 0.85, visual);
+    addNavalEngines(group, color, [[-0.28, 0, 1.0], [0.28, 0, 1.0]], visual);
+    addNavigationLights(group, dimensions.length, dimensions.width, visual);
+    return finalizeNavalShip(group, 'scout', forward, visual);
+}
+
+function makeFrigate(color = 0xaa63ed, forward = 1) {
+    // Frigate: thân trung dài, hai tháp pháo, radar cao và boong tên lửa.
+    const dimensions = { length: 4.25, width: 1.35, height: 0.48 };
+    const group = new THREE.Group();
+    const visual = { flames: [], radars: [], turrets: [], navigationLights: [], core: null };
+    group.add(new THREE.Mesh(createNavalHullGeometry(dimensions.length, dimensions.width, dimensions.height), getShipMaterial(color)));
+    addNavalBox(group, [1.05, 0.12, 2.4], [0, 0.34, 0.05], getShipMaterial(color, 'trim'));
+    addNavalBridge(group, color, [0, 0.42, 0.48], 0.62, 0.52, visual);
+    addNavalTurret(group, [-0.32, 0.44, -1.38], color, 1, 0.3, 1.05, visual);
+    addNavalTurret(group, [0.32, 0.44, 1.35], color, 1, 0.3, 0.95, visual);
+    addNavalEngines(group, color, [[-0.34, 0, 1.55], [0.34, 0, 1.55]], visual);
+    addNavigationLights(group, dimensions.length, dimensions.width, visual);
+    return finalizeNavalShip(group, 'fighter', forward, visual);
+}
+
+function makeCruiser(color = 0xffcd48, forward = 1) {
+    // Tuần dương hạm: thân rộng, nhiều tháp pháo, bệ tên lửa và ống phụt lớn.
+    const dimensions = { length: 5.25, width: 1.75, height: 0.62 };
+    const group = new THREE.Group();
+    const visual = { flames: [], radars: [], turrets: [], navigationLights: [], core: null };
+    group.add(new THREE.Mesh(createNavalHullGeometry(dimensions.length, dimensions.width, dimensions.height), getShipMaterial(color)));
+    addNavalBox(group, [1.38, 0.14, 3.2], [0, 0.38, 0.1], getShipMaterial(color, 'trim'));
+    addNavalBridge(group, color, [0, 0.48, 0.55], 0.8, 0.65, visual);
+    addNavalTurret(group, [0, 0.58, -1.65], color, 2, 0.38, 1.35, visual);
+    addNavalTurret(group, [-0.48, 0.48, 1.48], color, 1, 0.34, 1.15, visual);
+    addNavalTurret(group, [0.48, 0.48, 1.48], color, 1, 0.34, 1.15, visual);
     for (const side of [-1, 1]) {
-        const cannon = new THREE.Mesh(cannonGeometry, cannonMaterial);
-        cannon.rotation.x = Math.PI / 2;
-        cannon.position.set(side * 2.2, 0.1, 0.05);
-        group.add(cannon);
+        for (let index = 0; index < 3; index++) addNavalBox(group, [0.24, 0.12, 0.24], [side * 0.62, 0.54, -0.35 + index * 0.32], getShipMaterial(color, 'trim'));
     }
-    const core = new THREE.Mesh(coreGeometry, coreMaterial);
-    core.material.emissiveIntensity = 1.8;
-    core.position.set(0, 0.36, -0.05);
+    addNavalEngines(group, color, [[-0.52, 0, 1.85], [-0.17, 0, 1.85], [0.17, 0, 1.85], [0.52, 0, 1.85]], visual);
+    addNavigationLights(group, dimensions.length, dimensions.width, visual);
+    return finalizeNavalShip(group, 'bomber', forward, visual);
+}
+
+function makeDreadnought(color = 0xe3424c, forward = 1) {
+    // Dreadnought: tàu sân bay chiến hạm nhiều tầng, pháo hạng nặng và lõi đuôi phát sáng.
+    const dimensions = { length: 7.4, width: 2.4, height: 0.82 };
+    const group = new THREE.Group();
+    const visual = { flames: [], radars: [], turrets: [], navigationLights: [], core: null };
+    group.add(new THREE.Mesh(createNavalHullGeometry(dimensions.length, dimensions.width, dimensions.height), getShipMaterial(color)));
+    addNavalBox(group, [1.82, 0.16, 4.7], [0, 0.52, 0.15], getShipMaterial(color, 'trim'));
+    addNavalBridge(group, color, [0, 0.68, 1.25], 1.05, 0.82, visual);
+    addNavalBridge(group, color, [0, 0.62, -1.05], 0.7, 0.55, visual);
+    addNavalTurret(group, [0, 0.68, -2.45], color, 2, 0.48, 1.65, visual);
+    addNavalTurret(group, [-0.75, 0.55, 2.05], color, 1, 0.42, 1.45, visual);
+    addNavalTurret(group, [0.75, 0.55, 2.05], color, 1, 0.42, 1.45, visual);
+
+    const hangar = addNavalBox(group, [1.35, 0.26, 1.25], [0, 0.72, 0.05], getShipMaterial(0x55dfff, 'glass'));
+    hangar.userData.isHangar = true;
+    const coreGeometry = getShipGeometry('dreadnought-core', () => new THREE.SphereGeometry(0.66, 18, 12));
+    const core = new THREE.Mesh(coreGeometry, getShipMaterial(0xff5a42, 'core'));
+    core.position.set(0, 0.52, 2.55);
     group.add(core);
-    group.userData.core = core;
-    return group;
+    visual.core = core;
+    addNavalEngines(group, color, [[-0.82, 0, 2.48], [-0.28, 0, 2.48], [0.28, 0, 2.48], [0.82, 0, 2.48]], visual);
+    addNavigationLights(group, dimensions.length, dimensions.width, visual);
+    const dreadnought = finalizeNavalShip(group, 'bomber', forward, visual);
+    dreadnought.scale.setScalar(1.65);
+    return dreadnought;
+}
+
+function makeShipMesh(color, forward = -1, archetype = 'fighter') {
+    if (archetype === 'player') return makeDestroyer(color, forward);
+    if (archetype === 'scout') return makeCorvette(color, forward);
+    if (archetype === 'fighter') return makeFrigate(color, forward);
+    return makeCruiser(color, forward);
+}
+
+function makeBossMesh() {
+    return makeDreadnought(0xe3424c, 1);
 }
 
 function emitParticleBurst(x, y, z, color, count = 8, maxSpeed = 5) {
@@ -578,6 +726,20 @@ function updateShipVisuals(dt) {
         visual.flames.forEach((flame, index) => {
             flame.scale.z = 0.68 + Math.sin(gameTime * 28 + index) * 0.24 + Math.random() * 0.18;
         });
+        visual.radars.forEach((radar, index) => {
+            radar.rotation.y += dt * (0.9 + index * 0.25);
+        });
+        visual.navigationLights.forEach((light, index) => {
+            light.scale.setScalar(index === 0 ? 0.75 + Math.sin(gameTime * 6) * 0.25 : 0.75 + Math.cos(gameTime * 6) * 0.25);
+        });
+        if (visual.turrets.length && myShip && ship !== myShip) {
+            ship.updateWorldMatrix(true, false);
+            const localTarget = ship.worldToLocal(myShip.position.clone());
+            const turretYaw = Math.atan2(localTarget.x, -localTarget.z);
+            visual.turrets.forEach((turret) => {
+                turret.rotation.y += (clamp(turretYaw, -0.75, 0.75) - turret.rotation.y) * Math.min(1, dt * 6);
+            });
+        }
         if (visual.trailTimer <= 0) {
             visual.trailTimer = 0.11;
             const trailPoint = ship.localToWorld(trailLocalPosition.set(0, -0.02, 2.15));
@@ -862,8 +1024,20 @@ function startSoloWave(wave) {
             hp: (SOLO_WAVE_BALANCE.enemyHp + (wave - 1) * SOLO_WAVE_BALANCE.enemyHpPerWave) * archetype.hp * waveDifficulty,
             maxHp: (SOLO_WAVE_BALANCE.enemyHp + (wave - 1) * SOLO_WAVE_BALANCE.enemyHpPerWave) * archetype.hp * waveDifficulty,
             speed: (SOLO_WAVE_BALANCE.enemySpeed + (wave - 1) * SOLO_WAVE_BALANCE.enemySpeedPerWave) * archetype.speed,
-            fireTimer: 1.1 + Math.random() * 0.8,
+            vx: 0,
+            vy: 0,
+            vz: 0,
+            state: 'ENTRY',
+            stateTimer: 0.5 + Math.random() * 1.1,
             phase: Math.random() * Math.PI * 2,
+            reactionTimer: 0,
+            orbitDir: index % 2 ? 1 : -1,
+            dodgeDir: index % 2 ? 1 : -1,
+            formationIndex: index,
+            formationShape: wave % 3,
+            formationTimer: 5.5 + Math.random() * 2.5,
+            shield: type === 'bomber' ? Math.min(18, 6 + wave * 1.4) : 0,
+            fireTimer: 1.1 + Math.random() * 0.8,
         };
     });
 
@@ -884,40 +1058,188 @@ function startSoloWave(wave) {
     playTone({ freq: 330, duration: 0.16, type: 'triangle', volume: 0.035, slide: 180 });
 }
 
+function steerEnemy(enemy, targetX, targetY, targetZ, maxSpeed, dt) {
+    let desiredX = targetX - enemy.mesh.position.x;
+    let desiredY = targetY - enemy.mesh.position.y;
+    let desiredZ = targetZ - enemy.mesh.position.z;
+    let length = Math.hypot(desiredX, desiredY, desiredZ) || 1;
+    desiredX = desiredX / length * maxSpeed;
+    desiredY = desiredY / length * maxSpeed;
+    desiredZ = desiredZ / length * maxSpeed;
+
+    for (const other of soloEnemies) {
+        if (other === enemy) continue;
+        const dx = enemy.mesh.position.x - other.mesh.position.x;
+        const dy = enemy.mesh.position.y - other.mesh.position.y;
+        const dz = enemy.mesh.position.z - other.mesh.position.z;
+        const distance = Math.hypot(dx, dy, dz);
+        if (distance > 0 && distance < ENEMY_AI_BALANCE.separationRadius) {
+            const strength = ENEMY_AI_BALANCE.separationStrength * (1 - distance / ENEMY_AI_BALANCE.separationRadius);
+            desiredX += dx / distance * strength;
+            desiredY += dy / distance * strength;
+            desiredZ += dz / distance * strength;
+        }
+    }
+
+    const accel = ENEMY_AI_BALANCE.maxAccel[enemy.type] || 5;
+    enemy.vx += clamp(desiredX - enemy.vx, -accel * dt, accel * dt);
+    enemy.vy += clamp(desiredY - enemy.vy, -accel * dt, accel * dt);
+    enemy.vz += clamp(desiredZ - enemy.vz, -accel * dt, accel * dt);
+    const speed = Math.hypot(enemy.vx, enemy.vy, enemy.vz);
+    if (speed > maxSpeed) {
+        const scale = maxSpeed / speed;
+        enemy.vx *= scale;
+        enemy.vy *= scale;
+        enemy.vz *= scale;
+    }
+    enemy.mesh.position.x += enemy.vx * dt;
+    enemy.mesh.position.y += enemy.vy * dt;
+    enemy.mesh.position.z += enemy.vz * dt;
+    enemy.mesh.position.x = clamp(enemy.mesh.position.x, -12.5, 12.5);
+    enemy.mesh.position.y = clamp(enemy.mesh.position.y, -8.5, 8.5);
+    enemy.mesh.position.z = clamp(enemy.mesh.position.z, -34, 12);
+}
+
+function aimEnemyShot(enemy, shotSpeed, spread = 0, homing = false, homingTime = 0) {
+    const travel = Math.hypot(myShip.position.x - enemy.mesh.position.x, myShip.position.y - enemy.mesh.position.y, myShip.position.z - enemy.mesh.position.z) / shotSpeed;
+    const aimError = ENEMY_AI_BALANCE.aimErrorBase + Math.max(0, soloWave - 1) * ENEMY_AI_BALANCE.aimErrorPerWave;
+    const aimX = myShip.position.x + playerVelocity.x * travel + (Math.random() - 0.5) * aimError;
+    const aimY = myShip.position.y + playerVelocity.y * travel + (Math.random() - 0.5) * aimError;
+    const aimZ = myShip.position.z + playerVelocity.z * travel;
+    const dx = aimX - enemy.mesh.position.x;
+    const dy = aimY - enemy.mesh.position.y;
+    const dz = aimZ - enemy.mesh.position.z;
+    const length = Math.hypot(dx, dy, dz) || 1;
+    const angle = spread;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const x = dx * cos + dz * sin;
+    const z = dz * cos - dx * sin;
+    const normalized = Math.hypot(x, dy, z) || 1;
+    spawnBullet(enemy.mesh.position.x, enemy.mesh.position.z + 1.2, x / normalized * shotSpeed, z / normalized * shotSpeed, false, enemy.mesh.position.y, dy / normalized * shotSpeed, homing, homingTime);
+}
+
+function getFormationSlot(enemy, index) {
+    const count = soloEnemies.length || 1;
+    const shape = enemy.formationShape;
+    if (shape === 0) {
+        const row = index - (count - 1) / 2;
+        return { x: row * 3.1 + Math.sin(enemy.phase * 0.5) * 0.25, y: Math.sin(enemy.phase * 0.75) * 0.8, z: -14 - Math.abs(row) * 0.4 };
+    }
+    if (shape === 1) {
+        const angle = Math.PI * 2 * index / count;
+        return { x: Math.cos(angle) * 5.2, y: Math.sin(angle) * 2.8 + Math.sin(enemy.phase) * 0.35, z: -14 + Math.cos(angle) * 1.2 };
+    }
+    const row = Math.floor(index / 3);
+    const col = index % 3;
+    const width = (col - 1) * 2.8;
+    return { x: width, y: 1.4 - row * 1.8 + Math.sin(enemy.phase + col) * 0.35, z: -15 - row };
+}
+
 function updateSoloEnemies(dt, diff) {
     const fireInterval = Math.max(0.48, SOLO_WAVE_BALANCE.enemyFireInterval - (soloWave - 1) * SOLO_WAVE_BALANCE.enemyFireReductionPerWave);
-    for (const enemy of soloEnemies) {
+    for (let index = 0; index < soloEnemies.length; index++) {
+        const enemy = soloEnemies[index];
         enemy.phase += dt * (0.65 + enemy.speed * 0.12);
-        const desiredX = enemy.targetX + Math.sin(enemy.phase) * Math.min(1.5, 0.4 + soloWave * 0.08);
-        const desiredY = enemy.targetY + Math.cos(enemy.phase * 0.7) * 0.6;
-        enemy.mesh.position.x += (desiredX - enemy.mesh.position.x) * Math.min(1, dt * enemy.speed);
-        enemy.mesh.position.y += (desiredY - enemy.mesh.position.y) * Math.min(1, dt * enemy.speed);
-        enemy.mesh.position.z += (enemy.targetZ - enemy.mesh.position.z) * Math.min(1, dt * enemy.speed);
+        enemy.stateTimer -= dt;
+        enemy.reactionTimer -= dt;
+        enemy.formationTimer -= dt;
+        if (enemy.formationTimer <= 0) {
+            enemy.formationShape = (enemy.formationShape + 1) % 3;
+            enemy.formationTimer = 6 + Math.random() * 4;
+        }
 
-        for (const bullet of bullets) {
-            if (!bullet.mine) continue;
-            const nearX = bullet.mesh.position.x - enemy.mesh.position.x;
-            const nearY = bullet.mesh.position.y - enemy.mesh.position.y;
-            if (Math.abs(bullet.mesh.position.z - enemy.mesh.position.z) < 4 && Math.abs(nearX) < 1.8 && Math.abs(nearY) < 1.8) {
-                enemy.mesh.position.x += Math.sign(nearX || (enemy.targetX < 0 ? -1 : 1)) * enemy.speed * dt * 0.8;
-                enemy.mesh.position.y += Math.sign(nearY || 1) * enemy.speed * dt * 0.55;
-                break;
+        const slot = getFormationSlot(enemy, index);
+        let targetX = slot.x;
+        let targetY = slot.y;
+        let targetZ = slot.z;
+        const maxSpeed = ENEMY_AI_BALANCE.maxSpeed[enemy.type] * (1 + Math.min(0.35, (soloWave - 1) * 0.018));
+
+        if (enemy.type === 'scout') {
+            if (enemy.state === 'ENTRY' && enemy.stateTimer <= 0) enemy.state = 'ZIGZAG';
+            if (enemy.state === 'ZIGZAG') {
+                targetX += Math.sin(enemy.phase * 1.8) * 2.2;
+                targetY += Math.cos(enemy.phase * 2.35) * 1.25;
+                if (enemy.stateTimer <= -4 - Math.random() * 2) {
+                    enemy.state = 'DIVE';
+                    enemy.stateTimer = 1.05;
+                }
+            } else if (enemy.state === 'DIVE') {
+                targetX = myShip.position.x;
+                targetY = myShip.position.y;
+                targetZ = myShip.position.z;
+                if (enemy.stateTimer <= 0) enemy.state = 'RECOVER';
+            } else if (enemy.state === 'RECOVER') {
+                targetX = slot.x;
+                targetY = slot.y + 3.5;
+                if (enemy.stateTimer <= -1.1) {
+                    enemy.state = 'ZIGZAG';
+                    enemy.stateTimer = 3 + Math.random() * 3;
+                }
+            }
+        } else if (enemy.type === 'fighter') {
+            const dx = enemy.mesh.position.x - myShip.position.x;
+            const dz = enemy.mesh.position.z - myShip.position.z;
+            const angle = Math.atan2(dz, dx) + enemy.orbitDir * dt * 0.55;
+            const orbitRadius = 8.5;
+            targetX = myShip.position.x + Math.cos(angle) * orbitRadius;
+            targetY = myShip.position.y + Math.sin(enemy.phase * 0.9) * 1.8;
+            targetZ = myShip.position.z + Math.sin(angle) * 7;
+
+            if (enemy.reactionTimer <= 0) {
+                let threatened = false;
+                for (const bullet of bullets) {
+                    if (!bullet.mine) continue;
+                    const futureX = bullet.mesh.position.x + bullet.vx;
+                    const futureY = bullet.mesh.position.y + (bullet.vy || 0);
+                    const futureZ = bullet.mesh.position.z + bullet.vz;
+                    if (Math.hypot(futureX - enemy.mesh.position.x, futureY - enemy.mesh.position.y, futureZ - enemy.mesh.position.z) < 2.3) threatened = true;
+                }
+                if (threatened && Math.random() < Math.min(0.78, ENEMY_AI_BALANCE.dodgeBase + soloWave * ENEMY_AI_BALANCE.dodgePerWave)) {
+                    enemy.state = 'ROLL';
+                    enemy.stateTimer = 0.48;
+                    enemy.dodgeDir *= -1;
+                }
+                enemy.reactionTimer = ENEMY_AI_BALANCE.reactionBase + Math.max(0, soloWave - 1) * ENEMY_AI_BALANCE.reactionPerWave;
+            }
+            if (enemy.state === 'ROLL' && enemy.stateTimer > 0) {
+                targetX += enemy.dodgeDir * 4;
+                targetY += Math.sin(enemy.phase * 4) * 1.2;
+                enemy.mesh.rotation.z += dt * enemy.dodgeDir * 9;
+            } else {
+                enemy.mesh.rotation.z *= Math.max(0, 1 - dt * 3);
+            }
+        } else if (enemy.type === 'bomber') {
+            const distance = Math.hypot(myShip.position.x - enemy.mesh.position.x, myShip.position.z - enemy.mesh.position.z);
+            const preferred = 12;
+            if (distance < preferred - 2) {
+                targetX = enemy.mesh.position.x + (enemy.mesh.position.x - myShip.position.x) * 2;
+                targetY = myShip.position.y + Math.sin(enemy.phase * 0.45) * 1.1;
+                targetZ = enemy.mesh.position.z + (enemy.mesh.position.z - myShip.position.z) * 2;
+            } else {
+                targetX = slot.x;
+                targetY = slot.y;
+                targetZ = slot.z;
             }
         }
+
+        steerEnemy(enemy, targetX, targetY, targetZ, maxSpeed, dt);
+        enemy.mesh.lookAt(myShip.position.x, myShip.position.y, myShip.position.z);
 
         enemy.fireTimer -= dt;
         if (enemy.fireTimer <= 0 && enemy.mesh.position.z > -20) {
             enemy.fireTimer = fireInterval * (0.9 + Math.random() * 0.25);
-            const travel = myShip.position.distanceTo(enemy.mesh.position) / 22;
-            const aimX = myShip.position.x + playerVelocity.x * travel;
-            const aimY = myShip.position.y + playerVelocity.y * travel;
-            const dx = aimX - enemy.mesh.position.x;
-            const dy = aimY - enemy.mesh.position.y;
-            const dz = myShip.position.z - enemy.mesh.position.z;
-            const length = Math.hypot(dx, dy, dz) || 1;
-            const shotSpeed = 17 + Math.min(7, soloWave * 0.65);
-            spawnBullet(enemy.mesh.position.x, enemy.mesh.position.z + 1.2, dx / length * shotSpeed, dz / length * shotSpeed, false, enemy.mesh.position.y, dy / length * shotSpeed);
-            playTone({ freq: 360, duration: 0.035, type: 'square', volume: 0.012, slide: -70 });
+            if (enemy.type === 'fighter') {
+                aimEnemyShot(enemy, 19 + Math.min(7, soloWave * 0.6));
+            } else if (enemy.type === 'scout') {
+                aimEnemyShot(enemy, 16 + Math.min(6, soloWave * 0.55));
+            } else {
+                const shotSpeed = 12 + Math.min(4, soloWave * 0.35);
+                aimEnemyShot(enemy, shotSpeed, 0, true, 3.2);
+                aimEnemyShot(enemy, shotSpeed, -0.22);
+                aimEnemyShot(enemy, shotSpeed, 0.22);
+            }
+            playTone({ freq: enemy.type === 'bomber' ? 220 : 360, duration: 0.04, type: 'square', volume: 0.012, slide: -70 });
         }
     }
 }
@@ -925,21 +1247,81 @@ function updateSoloEnemies(dt, diff) {
 function updateSoloBoss(dt, diff) {
     if (!soloBoss) return;
     soloBoss.phase += dt;
-    soloBoss.mesh.position.x = Math.sin(soloBoss.phase * 0.75) * 6;
-    soloBoss.mesh.position.y = Math.sin(soloBoss.phase * 0.55) * 1.5;
-    soloBoss.mesh.position.z = -15 + Math.cos(soloBoss.phase) * 1.3;
+    soloBoss.vx = soloBoss.vx || 0;
+    soloBoss.vy = soloBoss.vy || 0;
+    soloBoss.vz = 0;
+    const ratio = soloBoss.hp / soloBoss.maxHp;
+    const phase = ratio > 0.66 ? 1 : ratio > 0.33 ? 2 : 3;
+    if (soloBoss.phaseNumber !== phase) {
+        soloBoss.phaseNumber = phase;
+        soloBoss.state = 'TELEGRAPH';
+        soloBoss.stateTimer = 0.9;
+        soloBoss.summonTimer = 0;
+    }
+    soloBoss.stateTimer -= dt;
+    soloBoss.fireTimer -= dt;
+    soloBoss.summonTimer = (soloBoss.summonTimer || 0) - dt;
+
+    let targetX = Math.sin(soloBoss.phase * (phase === 3 ? 1.15 : 0.75)) * (phase === 3 ? 7.5 : 6);
+    let targetY = Math.sin(soloBoss.phase * 0.55) * 1.8;
+    let targetZ = -15 + Math.cos(soloBoss.phase) * 1.2;
+
+    if (soloBoss.state === 'TELEGRAPH') {
+        targetX = soloBoss.mesh.position.x;
+        targetY = soloBoss.mesh.position.y;
+        soloBoss.mesh.scale.setScalar(1 + Math.sin(soloBoss.phase * 18) * 0.04);
+        soloBoss.mesh.rotation.z += dt * 3;
+        if (soloBoss.stateTimer <= 0) {
+            soloBoss.state = phase === 3 ? 'RAPID' : phase === 2 ? 'CHARGE' : 'FAN';
+            soloBoss.stateTimer = phase === 3 ? 2.6 : 1.8;
+        }
+    } else {
+        soloBoss.mesh.scale.setScalar(1);
+        if (soloBoss.state === 'CHARGE' || soloBoss.state === 'RAPID') {
+            targetX = myShip.position.x;
+            targetY = myShip.position.y;
+            targetZ = -12;
+        }
+    }
+
+    const bossAccel = ENEMY_AI_BALANCE.maxAccel.boss;
+    const bossMaxSpeed = ENEMY_AI_BALANCE.maxSpeed.boss * (1 + (phase - 1) * 0.28);
+    const desiredX = clamp(targetX - soloBoss.mesh.position.x, -bossMaxSpeed, bossMaxSpeed);
+    const desiredY = clamp(targetY - soloBoss.mesh.position.y, -bossMaxSpeed, bossMaxSpeed);
+    const desiredZ = clamp(targetZ - soloBoss.mesh.position.z, -bossMaxSpeed, bossMaxSpeed);
+    soloBoss.vx += clamp(desiredX - soloBoss.vx, -bossAccel * dt, bossAccel * dt);
+    soloBoss.vy += clamp(desiredY - soloBoss.vy, -bossAccel * dt, bossAccel * dt);
+    soloBoss.vz += clamp(desiredZ - soloBoss.vz, -bossAccel * dt, bossAccel * dt);
+    soloBoss.mesh.position.x = clamp(soloBoss.mesh.position.x + soloBoss.vx * dt, -12, 12);
+    soloBoss.mesh.position.y = clamp(soloBoss.mesh.position.y + soloBoss.vy * dt, -8, 8);
+    soloBoss.mesh.position.z = clamp(soloBoss.mesh.position.z + soloBoss.vz * dt, -20, 8);
     soloBoss.mesh.rotation.x += dt * 0.65;
     soloBoss.mesh.rotation.y += dt * 0.9;
-    soloBoss.fireTimer -= dt;
+
     if (soloBoss.fireTimer <= 0) {
-        soloBoss.fireTimer = Math.max(0.55, 1.15 - soloWave * 0.035);
-        const dx = myShip.position.x - soloBoss.mesh.position.x;
-        const dy = myShip.position.y - soloBoss.mesh.position.y;
-        const dz = myShip.position.z - soloBoss.mesh.position.z;
-        const length = Math.hypot(dx, dy, dz) || 1;
+        soloBoss.fireTimer = Math.max(phase === 3 ? 0.32 : 0.55, (1.15 - soloWave * 0.035) / (phase * 0.65));
         const speed = 19 + Math.min(8, soloWave * 0.5);
-        spawnBullet(soloBoss.mesh.position.x, soloBoss.mesh.position.z + 1.8, dx / length * speed, dz / length * speed, false, soloBoss.mesh.position.y, dy / length * speed);
+        const count = phase === 1 ? 5 : phase === 2 ? 7 : 11;
+        for (let i = 0; i < count; i++) {
+            const spread = (i - (count - 1) / 2) * (phase === 3 ? 0.11 : 0.16);
+            const dummy = { mesh: soloBoss.mesh };
+            aimEnemyShot(dummy, speed, spread);
+        }
         playBossTone();
+    }
+
+    if (phase >= 2 && soloBoss.summonTimer <= 0 && soloEnemies.length < 4) {
+        soloBoss.summonTimer = 7;
+        const mesh = soloEnemyPool.scout.pop() || makeShipMesh(0xff873f, 1, 'scout');
+        mesh.position.set(soloBoss.mesh.position.x + (Math.random() - 0.5) * 4, soloBoss.mesh.position.y, soloBoss.mesh.position.z - 3);
+        mesh.visible = true;
+        scene.add(mesh);
+        soloEnemies.push({ mesh, type: 'scout', targetX: 0, targetY: 0, targetZ: -14, hp: 55, maxHp: 55, vx: 0, vy: 0, vz: 0, state: 'ENTRY', stateTimer: 0.6, phase: Math.random() * 6, reactionTimer: 0, orbitDir: 1, dodgeDir: 1, formationIndex: soloEnemies.length, formationShape: soloWave % 3, formationTimer: 5 + Math.random() * 3, shield: 0, fireTimer: 1.5, speed: 2.2 });
+    }
+
+    if (soloBoss.stateTimer <= 0 && soloBoss.state !== 'TELEGRAPH') {
+        soloBoss.state = 'TELEGRAPH';
+        soloBoss.stateTimer = 0.75 + (phase === 1 ? 0.15 : 0);
     }
     updateBossBar();
 }
@@ -1130,16 +1512,65 @@ function showMessage(html) {
     document.getElementById('btnAgain').onclick = () => location.reload();
 }
 
+function updatePointerTarget(clientX, clientY) {
+    if (!renderer || !camera || !myShip) return;
+    pointerNdc.set(clientX / window.innerWidth * 2 - 1, -(clientY / window.innerHeight) * 2 + 1);
+    pointerRaycaster.setFromCamera(pointerNdc, camera);
+    const planeNormal = new THREE.Vector3();
+    const point = new THREE.Vector3();
+    if (soloMode) {
+        const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -myShip.position.z);
+        if (!pointerRaycaster.ray.intersectPlane(plane, point)) return;
+        playerTarget.x = clamp(point.x, -ARENA, ARENA);
+        playerTarget.y = clamp(point.y, -ARENA * 0.62, ARENA * 0.62);
+        playerTarget.z = myShip.position.z;
+    } else {
+        const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+        if (!pointerRaycaster.ray.intersectPlane(plane, point)) return;
+        playerTarget.x = clamp(point.x, -ARENA, ARENA);
+        playerTarget.z = clamp(point.z, -ARENA, ARENA);
+        playerTarget.y = 0;
+    }
+    playerTarget.active = true;
+}
+
 function setupInput() {
+    if (myShip) {
+        playerTarget.x = myShip.position.x;
+        playerTarget.y = myShip.position.y;
+        playerTarget.z = myShip.position.z;
+    }
+    document.body.style.touchAction = 'none';
     const block = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
     window.addEventListener('keydown', (e) => {
         keys[e.code] = true;
         if (block.includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+    aimMarkerEl = document.createElement('div');
+    aimMarkerEl.id = 'playerAimMarker';
+    aimMarkerEl.style.cssText = 'position:fixed;width:20px;height:20px;border:2px solid rgba(116,238,255,.95);border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:65;box-shadow:0 0 12px rgba(116,238,255,.55);display:none;';
+    aimMarkerEl.innerHTML = '<div style="position:absolute;left:50%;top:-7px;width:1px;height:32px;background:rgba(116,238,255,.8)"></div><div style="position:absolute;top:50%;left:-7px;height:1px;width:32px;background:rgba(116,238,255,.8)"></div>';
+    document.body.appendChild(aimMarkerEl);
+
+    const pointerMove = (event) => {
+        if (!alive || event.pointerType === 'touch' && !event.buttons && !event.isPrimary) return;
+        updatePointerTarget(event.clientX, event.clientY);
+        aimMarkerEl.style.left = `${event.clientX}px`;
+        aimMarkerEl.style.top = `${event.clientY}px`;
+        aimMarkerEl.style.display = 'block';
+    };
+    window.addEventListener('pointermove', pointerMove);
+    window.addEventListener('pointerdown', (event) => {
+        if (event.pointerType === 'touch') event.preventDefault();
+        pointerMove(event);
+    }, { passive: false });
+    window.addEventListener('contextmenu', (event) => event.preventDefault());
+    document.body.style.cursor = 'none';
 }
 
-function spawnBullet(x, z, vx, vz, mine, y = 0, vy = 0) {
+function spawnBullet(x, z, vx, vz, mine, y = 0, vy = 0, homing = false, homingTime = 0) {
     let mesh = bulletPool.pop();
     if (!mesh) {
         if (soloMode && bullets.length >= SOLO_BALANCE.maxPooledBullets) return;
@@ -1151,7 +1582,7 @@ function spawnBullet(x, z, vx, vz, mine, y = 0, vy = 0) {
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(vx, vy, vz).normalize());
     mesh.visible = true;
     scene.add(mesh);
-    bullets.push({ mesh, vx, vy, vz, mine });
+    bullets.push({ mesh, vx, vy, vz, mine, homing, homingTime });
 }
 
 function releaseBullet(bullet) {
@@ -1295,28 +1726,59 @@ function update(dt, now) {
         if (keys.ArrowRight || keys.KeyD) dx += 1;
         if (keys.ArrowUp || keys.KeyW) dz -= 1;
         if (keys.ArrowDown || keys.KeyS) dz += 1;
+
+        if (dx || dz) {
+            playerTarget.active = false;
+            playerTarget.x = clamp(playerTarget.x + dx * 1.8, -ARENA, ARENA);
+            playerTarget.y = clamp(playerTarget.y - dz * 1.8, -ARENA * 0.62, ARENA * 0.62);
+            playerTarget.z = clamp(playerTarget.z + dz * 1.8, -ARENA, ARENA);
+        }
+
         if (soloMode) {
-            let dy = -dz;
-            if (dx && dy) { dx *= 0.7071; dy *= 0.7071; }
-            playerVelocity.x = dx * myStats.speed * moveMul;
-            playerVelocity.y = dy * myStats.speed * moveMul;
-            playerVelocity.z = 0;
+            if (!playerTarget.active) {
+                playerTarget.x = myShip.position.x;
+                playerTarget.y = myShip.position.y;
+            }
+            const targetDx = playerTarget.x - myShip.position.x;
+            const targetDy = playerTarget.y - myShip.position.y;
+            const distance = Math.hypot(targetDx, targetDy);
+            const scale = distance > 0 ? Math.min(PLAYER_CURSOR_BALANCE.followSpeed * moveMul, PLAYER_CURSOR_BALANCE.followSpeed * moveMul * Math.max(0.18, distance / 1.8)) / distance : 0;
+            const desiredX = targetDx * scale;
+            const desiredY = targetDy * scale;
+            playerVelocity.x += clamp(desiredX - playerVelocity.x, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
+            playerVelocity.y += clamp(desiredY - playerVelocity.y, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
+            if (distance < PLAYER_CURSOR_BALANCE.stopRadius) playerVelocity.x *= 0.72, playerVelocity.y *= 0.72;
             myShip.position.x = clamp(myShip.position.x + playerVelocity.x * dt, -ARENA, ARENA);
             myShip.position.y = clamp(myShip.position.y + playerVelocity.y * dt, -ARENA * 0.62, ARENA * 0.62);
-            myShip.rotation.z = -dx * 0.32;
-            myShip.rotation.x = dy * 0.12;
+            playerVelocity.z = 0;
+            const bankTarget = clamp(playerVelocity.x * 0.055, -PLAYER_CURSOR_BALANCE.bankAmount, PLAYER_CURSOR_BALANCE.bankAmount);
+            const pitchTarget = clamp(playerVelocity.y * -PLAYER_CURSOR_BALANCE.pitchAmount * 0.055, -PLAYER_CURSOR_BALANCE.pitchAmount, PLAYER_CURSOR_BALANCE.pitchAmount);
+            myShip.rotation.z += (bankTarget - myShip.rotation.z) * Math.min(1, dt * 8);
+            myShip.rotation.x += (pitchTarget - myShip.rotation.x) * Math.min(1, dt * 8);
         } else {
-            if (dx && dz) { dx *= 0.7071; dz *= 0.7071; }
-            playerVelocity.x = dx * myStats.speed * moveMul;
-            playerVelocity.y = 0;
-            playerVelocity.z = dz * myStats.speed * moveMul;
+            if (!playerTarget.active) {
+                playerTarget.x = myShip.position.x;
+                playerTarget.z = myShip.position.z;
+            }
+            const targetDx = playerTarget.x - myShip.position.x;
+            const targetDz = playerTarget.z - myShip.position.z;
+            const distance = Math.hypot(targetDx, targetDz);
+            const scale = distance > 0 ? Math.min(PLAYER_CURSOR_BALANCE.followSpeed * moveMul, PLAYER_CURSOR_BALANCE.followSpeed * moveMul * Math.max(0.18, distance / 1.8)) / distance : 0;
+            const desiredX = targetDx * scale;
+            const desiredZ = targetDz * scale;
+            playerVelocity.x += clamp(desiredX - playerVelocity.x, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
+            playerVelocity.z += clamp(desiredZ - playerVelocity.z, -PLAYER_CURSOR_BALANCE.maxAccel * dt, PLAYER_CURSOR_BALANCE.maxAccel * dt);
+            if (distance < PLAYER_CURSOR_BALANCE.stopRadius) playerVelocity.x *= 0.72, playerVelocity.z *= 0.72;
             myShip.position.x = clamp(myShip.position.x + playerVelocity.x * dt, -ARENA, ARENA);
             myShip.position.z = clamp(myShip.position.z + playerVelocity.z * dt, -ARENA, ARENA);
-            myShip.rotation.z = -dx * 0.4;
+            playerVelocity.y = 0;
+            const bankTarget = clamp(playerVelocity.x * 0.055, -PLAYER_CURSOR_BALANCE.bankAmount, PLAYER_CURSOR_BALANCE.bankAmount);
+            myShip.rotation.z += (bankTarget - myShip.rotation.z) * Math.min(1, dt * 8);
+            myShip.rotation.x += (clamp(playerVelocity.z * -PLAYER_CURSOR_BALANCE.pitchAmount * 0.04, -PLAYER_CURSOR_BALANCE.pitchAmount, PLAYER_CURSOR_BALANCE.pitchAmount) - myShip.rotation.x) * Math.min(1, dt * 8);
         }
 
         shootCd -= dt;
-        if (keys.Space && shootCd <= 0) {
+        if (shootCd <= 0) {
             shootCd = myStats.cooldown * (soloMode && activeBuffs.rapidFire > 0 ? 0.55 : 1);
             playShootTone();
             if (mode === 'pvp') {
@@ -1364,11 +1826,16 @@ function update(dt, now) {
         }
     }
 
-    if (!soloMode && now - lastSend > 50) {
+    if (!soloMode && now - lastSend > PLAYER_CURSOR_BALANCE.sendRateMs) {
         lastSend = now;
         socket.emit('state', {
             x: myShip.position.x,
             z: myShip.position.z,
+            targetX: playerTarget.active ? playerTarget.x : myShip.position.x,
+            targetZ: playerTarget.active ? playerTarget.z : myShip.position.z,
+            targetY: playerTarget.active ? playerTarget.y : 0,
+            vx: playerVelocity.x,
+            vz: playerVelocity.z,
             rotation: myShip.rotation.z,
             hp: myHp,
         });
@@ -1456,6 +1923,18 @@ function updatePvp(dt) {
 
     for (let i = bullets.length - 1; i >= 0; i--) {
         const b = bullets[i];
+        if (!b.mine && b.homing && b.homingTime > 0) {
+            b.homingTime -= dt;
+            const speed = Math.hypot(b.vx, b.vy || 0, b.vz);
+            const dx = myShip.position.x - b.mesh.position.x;
+            const dy = myShip.position.y - b.mesh.position.y;
+            const dz = myShip.position.z - b.mesh.position.z;
+            const length = Math.hypot(dx, dy, dz) || 1;
+            const turn = Math.min(1, dt * 1.25);
+            b.vx += (dx / length * speed - b.vx) * turn;
+            b.vy = (b.vy || 0) + (dy / length * speed - (b.vy || 0)) * turn;
+            b.vz += (dz / length * speed - b.vz) * turn;
+        }
         b.mesh.position.x += b.vx * dt;
         b.mesh.position.y += (b.vy || 0) * dt;
         b.mesh.position.z += b.vz * dt;
@@ -1503,7 +1982,14 @@ function updatePvp(dt) {
                 const dy = b.mesh.position.y - enemy.mesh.position.y;
                 const dz = b.mesh.position.z - enemy.mesh.position.z;
                 if (dx * dx + dy * dy + dz * dz >= 2.25) continue;
-                enemy.hp -= SOLO_BALANCE.playerBulletDamage * diff;
+                const damage = SOLO_BALANCE.playerBulletDamage * diff;
+                if (enemy.shield > 0) {
+                    const shieldDamage = Math.min(enemy.shield, damage * 0.55);
+                    enemy.shield -= shieldDamage;
+                    enemy.hp -= Math.max(0, damage - shieldDamage);
+                } else {
+                    enemy.hp -= damage;
+                }
                 remove = true;
                 playHitTone();
                 if (enemy.hp <= 0) {
@@ -1665,6 +2151,10 @@ socket.on('snapshot', (s) => {
         if (info) { info.hp = hp; info.alive = !!al; }
         if (n === myNumber) {
             myHp = hp;
+            if (!soloMode && myShip) {
+                myShip.position.x = x;
+                myShip.position.z = z;
+            }
             if (!al && alive) {
                 alive = false;
                 myShip.visible = false;

@@ -33,6 +33,9 @@ const BOT_PROFILE = {
   2: { reactionMs: 170, aimError: 0.45, fireBias: 1, stray: 0.65, chaseBias: 1 },
   3: { reactionMs: 100, aimError: 0.22, fireBias: 0.8, stray: 0.45, chaseBias: 1.18 },
 };
+const PLAYER_TARGET_SPEED = 7.8;
+const PLAYER_TARGET_ACCEL = 28;
+
 const COOP = {
   ARENA: 14,
   SPAWN_Z: -36,
@@ -50,6 +53,29 @@ const cleanShip = (s) => (['1', '2', '3'].includes(String(s)) ? String(s) : '1')
 const dist2 = (ax, az, bx, bz) => (ax - bx) ** 2 + (az - bz) ** 2;
 const safeMapX = 13.2;
 const safeMapZ = 13.2;
+
+function movePlayerTowardTarget(player, dt) {
+  const targetX = clamp(Number(player.targetX) || player.x, -COOP.ARENA, COOP.ARENA);
+  const targetZ = clamp(Number(player.targetZ) || player.z, -COOP.ARENA, COOP.ARENA);
+  player.targetX = targetX;
+  player.targetZ = targetZ;
+
+  const dx = targetX - player.x;
+  const dz = targetZ - player.z;
+  const distance = Math.hypot(dx, dz);
+  const speedScale = distance > 0 ? Math.min(PLAYER_TARGET_SPEED, PLAYER_TARGET_SPEED * Math.max(0.18, distance / 1.8)) / distance : 0;
+  const desiredX = dx * speedScale;
+  const desiredZ = dz * speedScale;
+  player.vx += clamp(desiredX - player.vx, -PLAYER_TARGET_ACCEL * dt, PLAYER_TARGET_ACCEL * dt);
+  player.vz += clamp(desiredZ - player.vz, -PLAYER_TARGET_ACCEL * dt, PLAYER_TARGET_ACCEL * dt);
+  if (distance < 0.12) {
+    player.vx *= 0.72;
+    player.vz *= 0.72;
+  }
+  player.x = clamp(player.x + player.vx * dt, -COOP.ARENA, COOP.ARENA);
+  player.z = clamp(player.z + player.vz * dt, -COOP.ARENA, COOP.ARENA);
+  player.rotation = clamp(-player.vx / PLAYER_TARGET_SPEED * 0.42, -0.42, 0.42);
+}
 
 function genCode() {
   let code;
@@ -383,6 +409,10 @@ function startCoop(code) {
     p.z = 12;
     p.hp = SHIP_HP[p.ship];
     p.alive = true;
+    p.targetX = p.x;
+    p.targetZ = p.z;
+    p.vx = 0;
+    p.vz = 0;
   });
   room.sim = {
     time: 0, score: 0, shield: COOP.SHIELD, nextId: 1,
@@ -424,6 +454,8 @@ function tickCoop(code) {
   const mul = Math.min(3.5, 1 + sim.time * 0.02) * diff;
   const level = 1 + Math.floor(sim.time / 20);
   const alivePlayers = room.players.filter((p) => p.alive && !p.bot);
+
+  for (const p of alivePlayers) movePlayerTowardTarget(p, dt);
 
   sim.spawnTimer -= dt;
   if (sim.spawnTimer <= 0) {
@@ -579,12 +611,18 @@ io.on('connection', (socket) => {
       room.latestHumanState = next;
       const human = room.players.find((p) => !p.bot && p.id === socket.id);
       if (human) {
-        human.x = next.x;
-        human.z = next.z;
+        human.targetX = clamp(Number(d.targetX) || human.targetX || human.x, -COOP.ARENA, COOP.ARENA);
+        human.targetZ = clamp(Number(d.targetZ) || human.targetZ || human.z, -COOP.ARENA, COOP.ARENA);
+        movePlayerTowardTarget(human, 0.05);
         human.hp = next.hp;
-        human.vx = next.vx;
-        human.vz = next.vz;
+        human.vx = Number(d.vx) || 0;
+        human.vz = Number(d.vz) || 0;
+        next.x = human.x;
+        next.z = human.z;
+        next.vx = human.vx;
+        next.vz = human.vz;
       }
+      room.latestHumanState = next;
       socket.to(code).emit('opponentState', {
         x: next.x,
         z: next.z,
@@ -594,8 +632,8 @@ io.on('connection', (socket) => {
     } else {
       const p = room.players.find((x) => x.id === socket.id);
       if (p && p.alive) {
-        p.x = clamp(Number(d.x) || 0, -COOP.ARENA, COOP.ARENA);
-        p.z = clamp(Number(d.z) || 0, -COOP.ARENA, COOP.ARENA);
+        p.targetX = clamp(Number(d.targetX) || 0, -COOP.ARENA, COOP.ARENA);
+        p.targetZ = clamp(Number(d.targetZ) || 0, -COOP.ARENA, COOP.ARENA);
       }
     }
   });
