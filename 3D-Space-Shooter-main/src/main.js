@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { getCoopViewMode, setCoopViewMode } from '../../src/profile.js';
 
 // ==========================================
 // 1. KẾT NỐI SERVER + TRANG CHỦ + PHÒNG CHỜ
@@ -153,6 +154,16 @@ const SHIPS = {
 const ARENA = 14;
 const OPP_COLOR = 0xff3366;
 const START_X = [-6, -2, 2, 6];
+
+// Co-op camera only. visualScale and hitbox/speed are intentionally not affected by these values.
+const COOP_VIEW_CONFIG = {
+    transitionSeconds: 0.30, // Camera interpolation duration target.
+    cockpitHeightOffset: 1.15, // Cockpit camera height above the ship origin.
+    cockpitForwardOffset: 2.0, // Distance behind the forward camera origin, safely inside the cockpit.
+    cameraLookDistance: 30, // How far forward first-person aiming looks.
+    transitionSmoothing: 7.5, // Higher values reach the target faster.
+};
+
 const SOLO_BALANCE = {
     meteorWarning: 0.65,
     meteorIntervalMin: 2.6,
@@ -308,6 +319,8 @@ let particlePool = [];
 let buffHudEl;
 let playerShieldMesh;
 let distantPlanet;
+let coopViewMode = 'third';
+let coopViewButton = null;
 
 const oppTarget = { x: 0, z: -12 };
 let oppRotationTarget = 0;
@@ -433,6 +446,12 @@ function init3DGame(data) {
         camera.lookAt(0, 0, -6);
     }
     cameraBasePosition = camera.position.clone();
+
+    if (mode === 'coop') {
+        coopViewMode = getCoopViewMode();
+        createCoopViewButton();
+        applyCoopView(true);
+    }
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -799,15 +818,62 @@ function updateShipVisuals(dt) {
     }
 }
 
+function createCoopViewButton() {
+    if (coopViewButton || !mode || mode !== 'coop') return;
+    coopViewButton = document.createElement('button');
+    coopViewButton.id = 'coop-view-toggle';
+    coopViewButton.type = 'button';
+    coopViewButton.className = 'coop-view-toggle';
+    coopViewButton.setAttribute('aria-label', 'Change Co-op camera view');
+    document.body.appendChild(coopViewButton);
+    coopViewButton.addEventListener('click', toggleCoopView);
+}
+
+function applyCoopView(initial = false) {
+    if (mode !== 'coop') return;
+    if (!initial) setCoopViewMode(coopViewMode);
+    if (myShip) myShip.visible = coopViewMode === 'third';
+    if (coopViewButton) {
+        coopViewButton.textContent = coopViewMode === 'first' ? 'Third Person' : 'First Person';
+    }
+    if (aimMarkerEl) {
+        if (coopViewMode === 'first') {
+            aimMarkerEl.style.left = '50%';
+            aimMarkerEl.style.top = '50%';
+            aimMarkerEl.style.display = 'block';
+        } else {
+            aimMarkerEl.style.display = 'none';
+        }
+    }
+}
+
+function toggleCoopView() {
+    if (mode !== 'coop') return;
+    coopViewMode = coopViewMode === 'first' ? 'third' : 'first';
+    applyCoopView(false);
+}
+
 function updateFollowCamera(dt) {
-    if (soloMode) {
+    if (mode === 'coop' && coopViewMode === 'first') {
+        cameraDesiredPosition.set(
+            myShip.position.x,
+            myShip.position.y + COOP_VIEW_CONFIG.cockpitHeightOffset,
+            myShip.position.z - COOP_VIEW_CONFIG.cockpitForwardOffset
+        );
+        cameraLookTarget.set(
+            myShip.position.x,
+            myShip.position.y + COOP_VIEW_CONFIG.cockpitHeightOffset,
+            myShip.position.z - COOP_VIEW_CONFIG.cameraLookDistance
+        );
+    } else if (soloMode) {
         cameraDesiredPosition.set(myShip.position.x * 0.28, myShip.position.y + 7.5, myShip.position.z + 20);
         cameraLookTarget.set(myShip.position.x * 0.2, myShip.position.y * 0.45, myShip.position.z - 18);
     } else {
         cameraDesiredPosition.set(myShip.position.x * 0.18, 42, myShip.position.z + 12);
         cameraLookTarget.set(myShip.position.x * 0.18, 0, -6);
     }
-    camera.position.lerp(cameraDesiredPosition, 1 - Math.exp(-dt * 4.5));
+    const transitionBlend = 1 - Math.exp(-dt * COOP_VIEW_CONFIG.transitionSmoothing);
+    camera.position.lerp(cameraDesiredPosition, mode === 'coop' ? transitionBlend : 1 - Math.exp(-dt * 4.5));
     camera.lookAt(cameraLookTarget);
     cameraBasePosition.copy(camera.position);
     if (distantPlanet) distantPlanet.rotation.y += dt * distantPlanet.userData.rotationSpeed;
@@ -1619,6 +1685,7 @@ function setupInput() {
     window.addEventListener('keydown', (e) => {
         keys[e.code] = true;
         if (block.includes(e.code)) e.preventDefault();
+        if (e.code === 'KeyV' && !e.repeat && mode === 'coop') toggleCoopView();
 
         if (e.code === 'KeyN' && !e.repeat && soloMode && !gameEnded) {
             // Temporary wave debug shortcut: remove N handler after testing wave 1-5.
@@ -1650,8 +1717,13 @@ function setupInput() {
     const pointerMove = (event) => {
         if (!alive || event.pointerType === 'touch' && !event.buttons && !event.isPrimary) return;
         updatePointerTarget(event.clientX, event.clientY);
-        aimMarkerEl.style.left = `${event.clientX}px`;
-        aimMarkerEl.style.top = `${event.clientY}px`;
+        if (mode === 'coop' && coopViewMode === 'first') {
+            aimMarkerEl.style.left = '50%';
+            aimMarkerEl.style.top = '50%';
+        } else {
+            aimMarkerEl.style.left = `${event.clientX}px`;
+            aimMarkerEl.style.top = `${event.clientY}px`;
+        }
         aimMarkerEl.style.display = 'block';
     };
     window.addEventListener('pointermove', pointerMove);
@@ -1881,7 +1953,15 @@ function update(dt, now) {
                 const shotCount = soloMode && activeBuffs.multishot > 0 ? activeBuffs.multishotLevel : 1;
                 const spread = shotCount === 3 ? [-1.4, 0, 1.4] : shotCount === 2 ? [-0.8, 0.8] : [0];
                 for (const vx of spread) {
-                    const b = { x: myShip.position.x, y: myShip.position.y, z: myShip.position.z - 1.8, vx, vy: 0, vz: -30 * speedMul() };
+                    const firstPersonCoop = mode === 'coop' && coopViewMode === 'first';
+                    const b = {
+                        x: firstPersonCoop ? camera.position.x : myShip.position.x,
+                        y: firstPersonCoop ? camera.position.y : myShip.position.y,
+                        z: firstPersonCoop ? camera.position.z - 1.0 : myShip.position.z - 1.8,
+                        vx,
+                        vy: 0,
+                        vz: -30 * speedMul()
+                    };
                     spawnBullet(b.x, b.z, b.vx, b.vz, true, b.y, b.vy);
                     if (!soloMode) socket.emit('shoot', b);
                 }

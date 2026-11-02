@@ -37,6 +37,7 @@ function createProfile(username, avatar = AVATARS[0], guest = false) {
         username,
         avatar,
         selectedShip: '1',
+        coopViewMode: 'third',
         coins: 0,
         XP: 0,
         level: 1,
@@ -115,6 +116,15 @@ export function playAsGuest() {
 
 export function logout() {
     localStorage.removeItem(LAST_USER_KEY);
+}
+
+export function getCoopViewMode() {
+    return getProfile()?.coopViewMode === 'first' ? 'first' : 'third';
+}
+
+export function setCoopViewMode(mode) {
+    const nextMode = mode === 'first' ? 'first' : 'third';
+    return saveProfile({ coopViewMode: nextMode }).coopViewMode;
 }
 
 export function getProfile() {
@@ -225,4 +235,4 @@ export async function profileSelfTest() {
     return result;
 }
 
-window.profile = { register, login, logout, getProfile, saveProfile, addCoins, spendCoins, addXP, recordMatch, profileSelfTest };
+window.profile = { register, login, logout, getProfile, saveProfile, addCoins, spendCoins, addXP, recordMatch, getCoopViewMode, setCoopViewMode, profileSelfTest };
