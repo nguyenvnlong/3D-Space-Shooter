@@ -177,6 +177,34 @@ const SOLO_BALANCE = {
     pickupSpeed: 1.2,
     maxPooledParticles: 72,
 };
+
+// Ring meteor difficulty. Wave 1-4 has no ring meteors; these values control wave 5 onward.
+const RING_CONFIG = {
+    startWave: 5, // First wave that may spawn ring meteors.
+    speedScaleAtStart: 0.40, // Wave 5 speed is 40% of the current meteor speed.
+    damageScaleAtStart: 0.50, // Wave 5 damage is 50% of SOLO_BALANCE.meteorDamage.
+    spawnIntervalMin: 7.0, // Shortest delay between possible ring meteor spawns.
+    spawnIntervalMax: 9.5, // Longest delay between possible ring meteor spawns.
+    maxAtStart: 1, // Maximum ring meteors on screen at wave 5.
+    perWaveSpeedScale: 0.06, // Small extra speed increase for each wave after 5.
+    perWaveCountAfterStart: 0.18, // Small count increase for each wave after 5.
+    maxSpeedScale: 0.70, // Difficulty cap: never exceed 70% of the original speed.
+    maxCount: 4, // Hard cap for ring meteors on screen.
+    warningDistance: 0.65, // Seconds of visible warning before movement begins.
+};
+
+function getRingSpeedScale(wave) {
+    if (wave < RING_CONFIG.startWave) return 0;
+    const extra = Math.max(0, wave - RING_CONFIG.startWave) * RING_CONFIG.perWaveSpeedScale;
+    return Math.min(RING_CONFIG.maxSpeedScale, RING_CONFIG.speedScaleAtStart + extra);
+}
+
+function getRingMaxOnScreen(wave) {
+    if (wave < RING_CONFIG.startWave) return 0;
+    const extra = Math.max(0, wave - RING_CONFIG.startWave) * RING_CONFIG.perWaveCountAfterStart;
+    return Math.min(RING_CONFIG.maxCount, Math.max(RING_CONFIG.maxAtStart, 1 + Math.floor(extra)));
+}
+
 const SHIP_FOLLOW_SPEED = 12;
 const SHIP_MAX_SPEED = 18;
 const SHIP_ACCEL = 70;
@@ -867,12 +895,14 @@ function acquireSoloMeteor() {
 }
 
 function spawnSoloMeteor() {
+    if (soloWave < RING_CONFIG.startWave || soloMeteors.length >= getRingMaxOnScreen(soloWave)) return;
     const meteor = acquireSoloMeteor();
     const edge = Math.floor(Math.random() * 4);
     const startX = edge === 0 ? -ARENA - 1.5 : edge === 1 ? ARENA + 1.5 : (Math.random() - 0.5) * 14;
     const startY = edge === 2 ? -ARENA * 0.62 - 1 : edge === 3 ? ARENA * 0.62 + 1 : (Math.random() - 0.5) * 12;
-    const vx = edge < 2 ? -Math.sign(startX) * (7 + Math.random() * 2) : (Math.random() - 0.5) * 3;
-    const vy = edge >= 2 ? -Math.sign(startY) * (6 + Math.random() * 2) : -startY * 0.22 + (Math.random() - 0.5) * 2;
+    const ringSpeedScale = getRingSpeedScale(soloWave);
+    const vx = (edge < 2 ? -Math.sign(startX) * (7 + Math.random() * 2) : (Math.random() - 0.5) * 3) * ringSpeedScale;
+    const vy = (edge >= 2 ? -Math.sign(startY) * (6 + Math.random() * 2) : -startY * 0.22 + (Math.random() - 0.5) * 2) * ringSpeedScale;
     const startZ = 11;
     const radius = 0.72 + Math.random() * 0.18;
 
@@ -880,7 +910,7 @@ function spawnSoloMeteor() {
     meteor.mesh.position.set(startX, startY, startZ);
     meteor.mesh.rotation.set(Math.random() * 3, Math.random() * 3, 0);
     // Vòng cảnh báo đặt tại vị trí thiên thạch sẽ đi qua sau thời gian báo trước.
-    meteor.warning.position.set(startX + vx * SOLO_BALANCE.meteorWarning, startY + vy * SOLO_BALANCE.meteorWarning, startZ - 0.2);
+    meteor.warning.position.set(startX + vx * RING_CONFIG.warningDistance, startY + vy * RING_CONFIG.warningDistance, startZ - 0.2);
     meteor.warning.scale.setScalar(0.9 + radius * 0.35);
     meteor.warning.material = meteorWarningMat;
     meteor.warning.visible = true;
@@ -894,7 +924,7 @@ function spawnSoloMeteor() {
         vy,
         vz: 0,
         radius,
-        warningTime: SOLO_BALANCE.meteorWarning,
+        warningTime: RING_CONFIG.warningDistance,
         warned: false,
     });
 }
@@ -1382,10 +1412,14 @@ function updateSoloWaveProgress(dt) {
 }
 
 function updateSoloMeteors(dt) {
+    if (soloWave < RING_CONFIG.startWave) {
+        soloMeteorTimer = RING_CONFIG.spawnIntervalMin;
+        return;
+    }
     soloMeteorTimer -= dt;
     if (soloMeteorTimer <= 0) {
         spawnSoloMeteor();
-        soloMeteorTimer = SOLO_BALANCE.meteorIntervalMin + Math.random() * (SOLO_BALANCE.meteorIntervalMax - SOLO_BALANCE.meteorIntervalMin);
+        soloMeteorTimer = RING_CONFIG.spawnIntervalMin + Math.random() * (RING_CONFIG.spawnIntervalMax - RING_CONFIG.spawnIntervalMin);
     }
 
     for (let i = soloMeteors.length - 1; i >= 0; i--) {
@@ -1412,7 +1446,8 @@ function updateSoloMeteors(dt) {
         const dy = meteor.y - myShip.position.y;
         const dz = meteor.z - myShip.position.z;
         if (dx * dx + dy * dy + dz * dz < hitRadius * hitRadius) {
-            damageSoloPlayer(SOLO_BALANCE.meteorDamage * getMapDifficulty(), meteor.x, meteor.y, meteor.z);
+            const ringDamage = SOLO_BALANCE.meteorDamage * RING_CONFIG.damageScaleAtStart * getMapDifficulty();
+            damageSoloPlayer(ringDamage, meteor.x, meteor.y, meteor.z);
             explode(meteor.x, meteor.z, meteor.radius * 1.5, meteor.y);
             releaseSoloMeteor(meteor);
             soloMeteors.splice(i, 1);
@@ -1584,6 +1619,25 @@ function setupInput() {
     window.addEventListener('keydown', (e) => {
         keys[e.code] = true;
         if (block.includes(e.code)) e.preventDefault();
+
+        if (e.code === 'KeyN' && !e.repeat && soloMode && !gameEnded) {
+            // Temporary wave debug shortcut: remove N handler after testing wave 1-5.
+            for (const enemy of soloEnemies) {
+                scene.remove(enemy.mesh);
+                enemy.mesh.visible = false;
+                if (soloEnemyPool[enemy.type]) soloEnemyPool[enemy.type].push(enemy.mesh);
+            }
+            soloEnemies = [];
+            if (soloBoss) {
+                scene.remove(soloBoss.mesh);
+                soloBoss.mesh.visible = false;
+                soloBoss = null;
+            }
+            for (const meteor of soloMeteors) releaseSoloMeteor(meteor);
+            soloMeteors.length = 0;
+            soloWaveDelay = 0;
+            startSoloWave(soloWave + 1);
+        }
     });
     window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
