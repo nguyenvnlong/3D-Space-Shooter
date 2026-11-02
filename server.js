@@ -45,14 +45,32 @@ const SHIP_SPEED_BY_CLASS = {
   dreadnought: 11,
 };
 
-const COOP = {
+const COOP_CONFIG = {
+  LEGACY_MODE: false, // true restores the old asteroid-only Co-op simulation.
   ARENA: 14,
-  SPAWN_Z: -36,
-  END_Z: 15,
-  SHIELD: 5,
-  BULLET_SPEED: 36,
+  MAX_PLAYERS: 4,
+  SHIP_HP: 100,
+  ARMOR_MAX: 50,
+  ARMOR_DAMAGE_ABSORPTION: 1,
+  BULLET_DAMAGE: 25,
+  BULLET_SPEED: 28,
+  BULLET_COOLDOWN_MS: 220,
+  BULLET_RADIUS: 0.35,
+  PLAYER_RADIUS: 0.9,
+  RESPAWN_SECONDS: 3,
+  SPAWN_INVULNERABILITY_SECONDS: 2,
+  WIN_SCORE: 10,
+  MATCH_SECONDS: 300,
   TICK_MS: 33,
-  HIT_DAMAGE: 34,
+  MOVE_SPEED: 16,
+};
+
+const COOP = {
+  ARENA: COOP_CONFIG.ARENA,
+  SHIELD: COOP_CONFIG.ARMOR_MAX,
+  BULLET_SPEED: COOP_CONFIG.BULLET_SPEED,
+  TICK_MS: COOP_CONFIG.TICK_MS,
+  HIT_DAMAGE: COOP_CONFIG.BULLET_DAMAGE,
 };
 
 const rooms = {};
@@ -411,43 +429,58 @@ function publicBotState(room) {
 // ==========================================
 // LOGIC CO-OP (SERVER TỰ TÍNH)
 // ==========================================
+function coopSpawnPoint(room, occupied) {
+  const points = [
+    [-10, -10], [10, -10], [-10, 10], [10, 10], [0, -12], [0, 12],
+  ];
+  const available = points.filter(([x, z]) => room.players.every((p) =>
+    occupied !== p.number || Math.hypot(p.x - x, p.z - z) > 5));
+  const point = available[Math.floor(Math.random() * available.length)] || points[0];
+  return { x: point[0], z: point[1] };
+}
+
 function startCoop(code) {
   const room = rooms[code];
   room.started = true;
-  const startX = [-6, -2, 2, 6];
-  room.players.forEach((p) => {
-    p.x = startX[p.number - 1];
-    p.z = 12;
-    p.hp = SHIP_HP[p.ship];
+  room.players.forEach((p, index) => {
+    const spawn = coopSpawnPoint(room, p.number);
+    p.x = spawn.x;
+    p.z = spawn.z;
+    p.hp = COOP_CONFIG.SHIP_HP;
+    p.armor = COOP_CONFIG.ARMOR_MAX;
     p.alive = true;
+    p.respawnAt = 0;
+    p.invulnerableUntil = Date.now() + COOP_CONFIG.SPAWN_INVULNERABILITY_SECONDS * 1000;
+    p.score = 0;
     p.targetX = p.x;
     p.targetZ = p.z;
     p.vx = 0;
     p.vz = 0;
+    p.lastShot = 0;
   });
-  room.sim = {
+  room.sim = COOP_CONFIG.LEGACY_MODE ? {
     time: 0, score: 0, shield: COOP.SHIELD, nextId: 1,
     spawnTimer: 1.5, asteroids: [], bullets: [], last: Date.now(), timer: null,
+  } : {
+    time: 0, nextBulletId: 1, bullets: [], last: Date.now(), timer: null,
   };
   setTimeout(() => {
     if (rooms[code] !== room || !room.sim) return;
     room.sim.last = Date.now();
-    room.sim.timer = setInterval(() => tickCoop(code), COOP.TICK_MS);
+    room.sim.timer = setInterval(() => tickCoop(code), COOP_CONFIG.TICK_MS);
   }, 2500);
 }
 
 function endCoop(code, reason) {
   const room = rooms[code];
   if (!room || !room.sim || room.over) return;
-  const sim = room.sim;
-  clearInterval(sim.timer);
-  sim.timer = null;
+  clearInterval(room.sim.timer);
+  room.sim.timer = null;
   room.over = true;
-  io.to(code).emit('coopOver', {
-    score: sim.score,
-    time: Math.floor(sim.time),
-    level: 1 + Math.floor(sim.time / 20),
+  io.to(code).emit('coop:matchEnd', {
     reason,
+    time: Math.floor(room.sim.time),
+    players: room.players.map((p) => ({ number: p.number, name: p.name, score: p.score || 0 })),
   });
 }
 
@@ -455,6 +488,77 @@ function tickCoop(code) {
   const room = rooms[code];
   if (!room || !room.sim || room.over) return;
   const sim = room.sim;
+
+  if (!COOP_CONFIG.LEGACY_MODE) {
+    const now = Date.now();
+    const dt = Math.min((now - sim.last) / 1000, 0.1);
+    sim.last = now;
+    sim.time += dt;
+
+    for (const player of room.players) {
+      if (!player.alive && player.respawnAt && now >= player.respawnAt) {
+        const spawn = coopSpawnPoint(room, player.number);
+        player.x = spawn.x;
+        player.z = spawn.z;
+        player.hp = COOP_CONFIG.SHIP_HP;
+        player.armor = COOP_CONFIG.ARMOR_MAX;
+        player.alive = true;
+        player.respawnAt = 0;
+        player.invulnerableUntil = now + COOP_CONFIG.SPAWN_INVULNERABILITY_SECONDS * 1000;
+        player.targetX = player.x;
+        player.targetZ = player.z;
+      }
+    }
+
+    for (const player of room.players.filter((p) => p.alive)) movePlayerTowardTarget(player, dt);
+
+    for (const bullet of sim.bullets) {
+      bullet.x += bullet.vx * dt;
+      bullet.z += bullet.vz * dt;
+      bullet.ttl -= dt;
+      for (const target of room.players) {
+        if (!target.alive || target.invulnerableUntil > now || bullet.owner === target.number) continue;
+        if (Math.hypot(bullet.x - target.x, bullet.z - target.z) > COOP_CONFIG.PLAYER_RADIUS + COOP_CONFIG.BULLET_RADIUS) continue;
+        let remaining = COOP_CONFIG.BULLET_DAMAGE;
+        if (target.armor > 0) {
+          const absorbed = Math.min(target.armor, remaining * COOP_CONFIG.ARMOR_DAMAGE_ABSORPTION);
+          target.armor -= absorbed;
+          remaining -= absorbed;
+        }
+        target.hp = Math.max(0, target.hp - remaining);
+        bullet.dead = true;
+        if (target.hp <= 0) {
+          target.alive = false;
+          target.respawnAt = now + COOP_CONFIG.RESPAWN_SECONDS * 1000;
+          const killer = room.players.find((p) => p.number === bullet.owner);
+          if (killer) killer.score = (killer.score || 0) + 1;
+          io.to(code).emit('coop:killed', {
+            killer: killer ? { number: killer.number, name: killer.name } : null,
+            victim: { number: target.number, name: target.name },
+          });
+          const winner = room.players.find((p) => (p.score || 0) >= COOP_CONFIG.WIN_SCORE);
+          if (winner) return endCoop(code, 'score');
+        }
+        break;
+      }
+    }
+    sim.bullets = sim.bullets.filter((b) => !b.dead && b.ttl > 0 && Math.abs(b.x) <= COOP_CONFIG.ARENA + 5 && Math.abs(b.z) <= COOP_CONFIG.ARENA + 5);
+
+    if (sim.time >= COOP_CONFIG.MATCH_SECONDS) return endCoop(code, 'time');
+
+    const f = (n) => Math.round(n * 100) / 100;
+    io.to(code).emit('coop:snapshot', {
+      time: Math.floor(sim.time),
+      players: room.players.map((p) => ({
+        number: p.number, name: p.name, x: f(p.x), z: f(p.z),
+        hp: p.hp, armor: p.armor, alive: p.alive,
+        score: p.score || 0, respawnIn: p.alive ? 0 : Math.max(0, Math.ceil((p.respawnAt - now) / 1000)),
+        invulnerable: p.invulnerableUntil > now,
+      })),
+      bullets: sim.bullets.map((b) => ({ id: b.id, x: f(b.x), z: f(b.z), vx: f(b.vx), vz: f(b.vz) })),
+    });
+    return;
+  }
 
   const now = Date.now();
   const dt = Math.min((now - sim.last) / 1000, 0.1);
@@ -565,6 +669,7 @@ io.on('connection', (socket) => {
     if (mode === 'pvp' && rooms[code].botEnabled) ensureBot(rooms[code]);
     socket.join(code);
     socket.data.room = code;
+    console.log('[COOP] roomCreated', code, mode);
     socket.emit('roomCreated', { roomCode: code, playerNumber: 1, mode });
     broadcastLobby(code);
     console.log('Tạo phòng', code, mode, 'bot=', rooms[code].botEnabled);
@@ -586,6 +691,7 @@ io.on('connection', (socket) => {
     if (room.mode === 'pvp' && room.botEnabled) ensureBot(room);
     socket.join(code);
     socket.data.room = code;
+    console.log('[COOP] roomJoined', code, number, room.mode);
     socket.emit('roomJoined', { roomCode: code, playerNumber: number, mode: room.mode });
     broadcastLobby(code);
 
@@ -600,8 +706,47 @@ io.on('connection', (socket) => {
     const code = socket.data.room;
     const room = rooms[code];
     if (!room || room.mode !== 'coop' || room.started || room.host !== socket.id) return;
-    io.to(code).emit('gameStart', { mode: 'coop', map: room.map, players: publicPlayers(room) });
+    console.log('[COOP] startGame', code, room.players.length);
     startCoop(code);
+    io.to(code).emit('gameStart', { mode: 'coop', map: room.map, players: publicPlayers(room) });
+  });
+
+  socket.on('coop:state', (d) => {
+    const code = socket.data.room;
+    const room = rooms[code];
+    if (!room || room.mode !== 'coop' || !room.started || room.over || !d) return;
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player || !player.alive) return;
+    player.targetX = clamp(Number(d.targetX) || player.x, -COOP_CONFIG.ARENA, COOP_CONFIG.ARENA);
+    player.targetZ = clamp(Number(d.targetZ) || player.z, -COOP_CONFIG.ARENA, COOP_CONFIG.ARENA);
+  });
+
+  socket.on('coop:shoot', (d) => {
+    const code = socket.data.room;
+    const room = rooms[code];
+    const sim = room && room.sim;
+    if (!room || room.mode !== 'coop' || !sim || room.over || !d) return;
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player || !player.alive) return;
+    const now = Date.now();
+    if (now - (player.lastShot || 0) < COOP_CONFIG.BULLET_COOLDOWN_MS) return;
+    player.lastShot = now;
+    const originX = Number.isFinite(Number(d.x)) ? Number(d.x) : player.x;
+    const originZ = Number.isFinite(Number(d.z)) ? Number(d.z) : player.z;
+    let vx = Number(d.vx) || 0;
+    let vz = Number(d.vz) || -COOP_CONFIG.BULLET_SPEED;
+    const length = Math.hypot(vx, vz);
+    if (length > 0) {
+      vx = vx / length * COOP_CONFIG.BULLET_SPEED;
+      vz = vz / length * COOP_CONFIG.BULLET_SPEED;
+    } else {
+      vz = -COOP_CONFIG.BULLET_SPEED;
+    }
+    if (sim.bullets.length >= 250) return;
+    sim.bullets.push({
+      id: sim.nextBulletId++, x: originX, z: originZ,
+      vx, vz, ttl: 3, owner: player.number,
+    });
   });
 
   socket.on('state', (d) => {
